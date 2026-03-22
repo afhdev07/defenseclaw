@@ -1,0 +1,24 @@
+# DefenseClaw Permissive Policy
+# Development mode — scans and warns, blocks only CRITICAL
+name: permissive
+description: Permissive policy for development and testing
+
+admission:
+  scan_on_install: true
+  block_severity:
+    - CRITICAL
+  warn_severity:
+    - HIGH
+    - MEDIUM
+    - LOW
+  allow_list_bypass_scan: true
+
+enforcement:
+  quarantine_on_block: true
+  update_sandbox_policy: false
+  max_enforcement_delay_seconds: 5
+
+audit:
+  log_all_actions: true
+  log_scan_results: true
+  retention_days: 30

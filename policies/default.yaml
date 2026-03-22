@@ -1,0 +1,24 @@
+# DefenseClaw Default Policy
+# Balanced security — scans everything, blocks HIGH/CRITICAL, warns on MEDIUM/LOW
+name: default
+description: Balanced security policy for standard deployments
+
+admission:
+  scan_on_install: true
+  block_severity:
+    - CRITICAL
+    - HIGH
+  warn_severity:
+    - MEDIUM
+    - LOW
+  allow_list_bypass_scan: true
+
+enforcement:
+  quarantine_on_block: true
+  update_sandbox_policy: true
+  max_enforcement_delay_seconds: 2
+
+audit:
+  log_all_actions: true
+  log_scan_results: true
+  retention_days: 90

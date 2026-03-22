@@ -1,0 +1,24 @@
+# DefenseClaw Strict Policy
+# Maximum security — blocks MEDIUM and above, no allow-list bypass
+name: strict
+description: Maximum security policy for high-risk environments
+
+admission:
+  scan_on_install: true
+  block_severity:
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+  warn_severity:
+    - LOW
+  allow_list_bypass_scan: false
+
+enforcement:
+  quarantine_on_block: true
+  update_sandbox_policy: true
+  max_enforcement_delay_seconds: 1
+
+audit:
+  log_all_actions: true
+  log_scan_results: true
+  retention_days: 365

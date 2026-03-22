@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DefenseClaw Audit Event",
+  "type": "object",
+  "required": ["id", "timestamp", "action", "actor"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "action": { "type": "string", "enum": ["init", "scan", "block", "allow", "quarantine", "restore", "deploy", "stop"] },
+    "target": { "type": "string" },
+    "actor": { "type": "string", "default": "defenseclaw" },
+    "details": { "type": "string" },
+    "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] }
+  }
+}

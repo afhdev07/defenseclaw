@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DefenseClaw Scan Result",
+  "type": "object",
+  "required": ["scanner", "target", "timestamp", "findings"],
+  "properties": {
+    "scanner": { "type": "string" },
+    "target": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "duration": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "title", "scanner"],
+        "properties": {
+          "id": { "type": "string" },
+          "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "remediation": { "type": "string" },
+          "scanner": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

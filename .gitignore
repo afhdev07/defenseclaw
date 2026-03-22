@@ -1,0 +1,26 @@
+.DS_Store
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and IDE metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go build and test artifacts
+bin/
+dist/
+build/
+coverage.out
+cover.out
+*.coverprofile
+*.test
+
+# Local binaries
+/defenseclaw
+/defenseclaw-*
