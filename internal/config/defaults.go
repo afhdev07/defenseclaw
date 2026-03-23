@@ -118,6 +118,6 @@ func DefaultConfig() *Config {
 			MaxReconnectMs:  15000,
 			ApprovalTimeout: 30,
 		},
-		SkillActions: DefaultSkillActions(),
+		SkillActions:  DefaultSkillActions(),
 	}
 }

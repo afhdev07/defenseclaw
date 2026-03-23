@@ -10,15 +10,16 @@ func TestDefaultSkillActions(t *testing.T) {
 	actions := config.DefaultSkillActions()
 
 	tests := []struct {
-		severity        string
-		wantRuntime     config.RuntimeAction
-		wantFile        config.FileAction
+		severity    string
+		wantRuntime config.RuntimeAction
+		wantFile    config.FileAction
+		wantInstall config.InstallAction
 	}{
-		{"CRITICAL", config.RuntimeBlock, config.FileActionQuarantine},
-		{"HIGH", config.RuntimeBlock, config.FileActionQuarantine},
-		{"MEDIUM", config.RuntimeAllow, config.FileActionNone},
-		{"LOW", config.RuntimeAllow, config.FileActionNone},
-		{"INFO", config.RuntimeAllow, config.FileActionNone},
+		{"CRITICAL", config.RuntimeDisable, config.FileActionQuarantine, config.InstallBlock},
+		{"HIGH", config.RuntimeDisable, config.FileActionQuarantine, config.InstallBlock},
+		{"MEDIUM", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
+		{"LOW", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
+		{"INFO", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
 	}
 
 	for _, tt := range tests {
@@ -29,6 +30,9 @@ func TestDefaultSkillActions(t *testing.T) {
 			}
 			if action.File != tt.wantFile {
 				t.Errorf("ForSeverity(%q).File = %q, want %q", tt.severity, action.File, tt.wantFile)
+			}
+			if action.Install != tt.wantInstall {
+				t.Errorf("ForSeverity(%q).Install = %q, want %q", tt.severity, action.Install, tt.wantInstall)
 			}
 		})
 	}
@@ -41,8 +45,8 @@ func TestForSeverityCaseInsensitive(t *testing.T) {
 	for _, v := range variants {
 		t.Run(v, func(t *testing.T) {
 			action := actions.ForSeverity(v)
-			if action.Runtime != config.RuntimeBlock {
-				t.Errorf("ForSeverity(%q).Runtime = %q, want %q", v, action.Runtime, config.RuntimeBlock)
+			if action.Runtime != config.RuntimeDisable {
+				t.Errorf("ForSeverity(%q).Runtime = %q, want %q", v, action.Runtime, config.RuntimeDisable)
 			}
 		})
 	}
@@ -51,25 +55,28 @@ func TestForSeverityCaseInsensitive(t *testing.T) {
 func TestForSeverityUnknownFallsBackToInfo(t *testing.T) {
 	actions := config.DefaultSkillActions()
 	action := actions.ForSeverity("UNKNOWN")
-	if action.Runtime != config.RuntimeAllow {
-		t.Errorf("ForSeverity(UNKNOWN).Runtime = %q, want %q", action.Runtime, config.RuntimeAllow)
+	if action.Runtime != config.RuntimeEnable {
+		t.Errorf("ForSeverity(UNKNOWN).Runtime = %q, want %q", action.Runtime, config.RuntimeEnable)
 	}
 	if action.File != config.FileActionNone {
 		t.Errorf("ForSeverity(UNKNOWN).File = %q, want %q", action.File, config.FileActionNone)
 	}
+	if action.Install != config.InstallNone {
+		t.Errorf("ForSeverity(UNKNOWN).Install = %q, want %q", action.Install, config.InstallNone)
+	}
 }
 
-func TestShouldBlockAndQuarantine(t *testing.T) {
+func TestShouldDisableAndQuarantine(t *testing.T) {
 	actions := config.DefaultSkillActions()
 
-	if !actions.ShouldBlock("CRITICAL") {
-		t.Error("expected CRITICAL to be blocked")
+	if !actions.ShouldDisable("CRITICAL") {
+		t.Error("expected CRITICAL to be disabled")
 	}
-	if !actions.ShouldBlock("HIGH") {
-		t.Error("expected HIGH to be blocked")
+	if !actions.ShouldDisable("HIGH") {
+		t.Error("expected HIGH to be disabled")
 	}
-	if actions.ShouldBlock("MEDIUM") {
-		t.Error("expected MEDIUM not to be blocked with default config")
+	if actions.ShouldDisable("MEDIUM") {
+		t.Error("expected MEDIUM not to be disabled with default config")
 	}
 
 	if !actions.ShouldQuarantine("CRITICAL") {
@@ -78,57 +85,67 @@ func TestShouldBlockAndQuarantine(t *testing.T) {
 	if actions.ShouldQuarantine("LOW") {
 		t.Error("expected LOW not to be quarantined with default config")
 	}
+
+	if !actions.ShouldInstallBlock("CRITICAL") {
+		t.Error("expected CRITICAL to be install-blocked")
+	}
+	if actions.ShouldInstallBlock("MEDIUM") {
+		t.Error("expected MEDIUM not to be install-blocked with default config")
+	}
 }
 
-func TestStrictPolicyBlocksMedium(t *testing.T) {
+func TestStrictPolicyDisablesMedium(t *testing.T) {
 	actions := config.SkillActionsConfig{
-		Critical: config.SeverityAction{Runtime: config.RuntimeBlock, File: config.FileActionQuarantine},
-		High:     config.SeverityAction{Runtime: config.RuntimeBlock, File: config.FileActionQuarantine},
-		Medium:   config.SeverityAction{Runtime: config.RuntimeBlock, File: config.FileActionQuarantine},
-		Low:      config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Info:     config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
+		Critical: config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeDisable, Install: config.InstallBlock},
+		High:     config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeDisable, Install: config.InstallBlock},
+		Medium:   config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeDisable, Install: config.InstallBlock},
+		Low:      config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Info:     config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
 	}
 
-	if !actions.ShouldBlock("MEDIUM") {
-		t.Error("strict policy should block MEDIUM")
+	if !actions.ShouldDisable("MEDIUM") {
+		t.Error("strict policy should disable MEDIUM")
 	}
 	if !actions.ShouldQuarantine("MEDIUM") {
 		t.Error("strict policy should quarantine MEDIUM")
 	}
-	if actions.ShouldBlock("LOW") {
-		t.Error("strict policy should not block LOW")
+	if !actions.ShouldInstallBlock("MEDIUM") {
+		t.Error("strict policy should install-block MEDIUM")
+	}
+	if actions.ShouldDisable("LOW") {
+		t.Error("strict policy should not disable LOW")
 	}
 }
 
 func TestPermissivePolicyAllowsHigh(t *testing.T) {
 	actions := config.SkillActionsConfig{
-		Critical: config.SeverityAction{Runtime: config.RuntimeBlock, File: config.FileActionQuarantine},
-		High:     config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Medium:   config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Low:      config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Info:     config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
+		Critical: config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeDisable, Install: config.InstallBlock},
+		High:     config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Medium:   config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Low:      config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Info:     config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
 	}
 
-	if actions.ShouldBlock("HIGH") {
-		t.Error("permissive policy should not block HIGH")
+	if actions.ShouldDisable("HIGH") {
+		t.Error("permissive policy should not disable HIGH")
 	}
-	if !actions.ShouldBlock("CRITICAL") {
-		t.Error("permissive policy should still block CRITICAL")
+	if !actions.ShouldDisable("CRITICAL") {
+		t.Error("permissive policy should still disable CRITICAL")
 	}
 }
 
-func TestQuarantineWithoutBlock(t *testing.T) {
+func TestQuarantineWithoutDisable(t *testing.T) {
 	actions := config.SkillActionsConfig{
-		Critical: config.SeverityAction{Runtime: config.RuntimeBlock, File: config.FileActionQuarantine},
-		High:     config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionQuarantine},
-		Medium:   config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Low:      config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
-		Info:     config.SeverityAction{Runtime: config.RuntimeAllow, File: config.FileActionNone},
+		Critical: config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeDisable, Install: config.InstallBlock},
+		High:     config.SeverityAction{File: config.FileActionQuarantine, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Medium:   config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Low:      config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
+		Info:     config.SeverityAction{File: config.FileActionNone, Runtime: config.RuntimeEnable, Install: config.InstallNone},
 	}
 
 	action := actions.ForSeverity("HIGH")
-	if action.Runtime != config.RuntimeAllow {
-		t.Errorf("expected HIGH runtime to be allow, got %q", action.Runtime)
+	if action.Runtime != config.RuntimeEnable {
+		t.Errorf("expected HIGH runtime to be enable, got %q", action.Runtime)
 	}
 	if action.File != config.FileActionQuarantine {
 		t.Errorf("expected HIGH file to be quarantine, got %q", action.File)
@@ -155,5 +172,13 @@ func TestValidateRejectsInvalidFile(t *testing.T) {
 	actions.High.File = "delete"
 	if err := actions.Validate(); err == nil {
 		t.Fatal("expected Validate to return error for invalid file action")
+	}
+}
+
+func TestValidateRejectsInvalidInstall(t *testing.T) {
+	actions := config.DefaultSkillActions()
+	actions.Critical.Install = "yeet"
+	if err := actions.Validate(); err == nil {
+		t.Fatal("expected Validate to return error for invalid install action")
 	}
 }

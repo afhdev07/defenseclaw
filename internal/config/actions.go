@@ -7,11 +7,11 @@ import (
 
 func DefaultSkillActions() SkillActionsConfig {
 	return SkillActionsConfig{
-		Critical: SeverityAction{Runtime: RuntimeBlock, File: FileActionQuarantine},
-		High:     SeverityAction{Runtime: RuntimeBlock, File: FileActionQuarantine},
-		Medium:   SeverityAction{Runtime: RuntimeAllow, File: FileActionNone},
-		Low:      SeverityAction{Runtime: RuntimeAllow, File: FileActionNone},
-		Info:     SeverityAction{Runtime: RuntimeAllow, File: FileActionNone},
+		Critical: SeverityAction{File: FileActionQuarantine, Runtime: RuntimeDisable, Install: InstallBlock},
+		High:     SeverityAction{File: FileActionQuarantine, Runtime: RuntimeDisable, Install: InstallBlock},
+		Medium:   SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Low:      SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		Info:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
 	}
 }
 
@@ -32,14 +32,19 @@ func (a *SkillActionsConfig) ForSeverity(severity string) SeverityAction {
 	}
 }
 
-// ShouldBlock returns true if the runtime action for the given severity is "block".
-func (a *SkillActionsConfig) ShouldBlock(severity string) bool {
-	return a.ForSeverity(severity).Runtime == RuntimeBlock
+// ShouldDisable returns true if the runtime action for the given severity is "disable".
+func (a *SkillActionsConfig) ShouldDisable(severity string) bool {
+	return a.ForSeverity(severity).Runtime == RuntimeDisable
 }
 
 // ShouldQuarantine returns true if the file action for the given severity is "quarantine".
 func (a *SkillActionsConfig) ShouldQuarantine(severity string) bool {
 	return a.ForSeverity(severity).File == FileActionQuarantine
+}
+
+// ShouldInstallBlock returns true if the install action for the given severity is "block".
+func (a *SkillActionsConfig) ShouldInstallBlock(severity string) bool {
+	return a.ForSeverity(severity).Install == InstallBlock
 }
 
 func (a *SkillActionsConfig) Validate() error {
@@ -56,16 +61,22 @@ func (a *SkillActionsConfig) Validate() error {
 
 	for _, e := range entries {
 		switch e.action.Runtime {
-		case RuntimeBlock, RuntimeAllow:
+		case RuntimeDisable, RuntimeEnable:
 		default:
 			return fmt.Errorf("config: skill_actions.%s.runtime: invalid value %q (must be %q or %q)",
-				e.label, e.action.Runtime, RuntimeBlock, RuntimeAllow)
+				e.label, e.action.Runtime, RuntimeDisable, RuntimeEnable)
 		}
 		switch e.action.File {
 		case FileActionNone, FileActionQuarantine:
 		default:
 			return fmt.Errorf("config: skill_actions.%s.file: invalid value %q (must be %q or %q)",
 				e.label, e.action.File, FileActionNone, FileActionQuarantine)
+		}
+		switch e.action.Install {
+		case InstallBlock, InstallAllow, InstallNone:
+		default:
+			return fmt.Errorf("config: skill_actions.%s.install: invalid value %q (must be %q, %q, or %q)",
+				e.label, e.action.Install, InstallBlock, InstallAllow, InstallNone)
 		}
 	}
 	return nil

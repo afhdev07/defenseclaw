@@ -106,8 +106,8 @@ type GatewayConfig struct {
 type RuntimeAction string
 
 const (
-	RuntimeBlock RuntimeAction = "block"
-	RuntimeAllow RuntimeAction = "allow"
+	RuntimeDisable RuntimeAction = "disable"
+	RuntimeEnable  RuntimeAction = "enable"
 )
 
 type FileAction string
@@ -117,9 +117,18 @@ const (
 	FileActionQuarantine FileAction = "quarantine"
 )
 
+type InstallAction string
+
+const (
+	InstallBlock InstallAction = "block"
+	InstallAllow InstallAction = "allow"
+	InstallNone  InstallAction = "none"
+)
+
 type SeverityAction struct {
-	Runtime RuntimeAction `mapstructure:"runtime" yaml:"runtime"`
 	File    FileAction    `mapstructure:"file"    yaml:"file"`
+	Runtime RuntimeAction `mapstructure:"runtime" yaml:"runtime"`
+	Install InstallAction `mapstructure:"install" yaml:"install"`
 }
 
 type SkillActionsConfig struct {
@@ -213,16 +222,21 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("splunk.batch_size", 50)
 	viper.SetDefault("splunk.flush_interval_s", 5)
 
-	viper.SetDefault("skill_actions.critical.runtime", string(RuntimeBlock))
 	viper.SetDefault("skill_actions.critical.file", string(FileActionQuarantine))
-	viper.SetDefault("skill_actions.high.runtime", string(RuntimeBlock))
+	viper.SetDefault("skill_actions.critical.runtime", string(RuntimeDisable))
+	viper.SetDefault("skill_actions.critical.install", string(InstallBlock))
 	viper.SetDefault("skill_actions.high.file", string(FileActionQuarantine))
-	viper.SetDefault("skill_actions.medium.runtime", string(RuntimeAllow))
+	viper.SetDefault("skill_actions.high.runtime", string(RuntimeDisable))
+	viper.SetDefault("skill_actions.high.install", string(InstallBlock))
 	viper.SetDefault("skill_actions.medium.file", string(FileActionNone))
-	viper.SetDefault("skill_actions.low.runtime", string(RuntimeAllow))
+	viper.SetDefault("skill_actions.medium.runtime", string(RuntimeEnable))
+	viper.SetDefault("skill_actions.medium.install", string(InstallNone))
 	viper.SetDefault("skill_actions.low.file", string(FileActionNone))
-	viper.SetDefault("skill_actions.info.runtime", string(RuntimeAllow))
+	viper.SetDefault("skill_actions.low.runtime", string(RuntimeEnable))
+	viper.SetDefault("skill_actions.low.install", string(InstallNone))
 	viper.SetDefault("skill_actions.info.file", string(FileActionNone))
+	viper.SetDefault("skill_actions.info.runtime", string(RuntimeEnable))
+	viper.SetDefault("skill_actions.info.install", string(InstallNone))
 
 	viper.SetDefault("gateway.host", "127.0.0.1")
 	viper.SetDefault("gateway.port", 18789)

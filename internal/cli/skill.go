@@ -22,29 +22,74 @@ import (
 
 var skillCmd = &cobra.Command{
 	Use:   "skill",
-	Short: "Manage OpenClaw skills — install, scan, disable, enable",
+	Short: "Manage OpenClaw skills — install, scan, block, allow, disable, enable, quarantine, restore",
 }
 
 var skillDisableCmd = &cobra.Command{
-	Use:   "disable <skill-key>",
-	Short: "Disable a skill via the OpenClaw gateway and add to block list",
-	Long: `Disable a skill by sending a skills.update RPC to the OpenClaw gateway and
-adding the skill to the local block list. This immediately prevents the agent
-from using the skill.
+	Use:   "disable <skill>",
+	Short: "Disable a skill at runtime via the OpenClaw gateway",
+	Long: `Send a skills.update RPC to the OpenClaw gateway to disable a skill in the
+running session. This prevents the agent from using the skill's tools until
+it is re-enabled.
 
-Requires the gateway to be running. Configure gateway connection in
-~/.defenseclaw/config.yaml under the "gateway" section.`,
+This is a runtime-only action — it does not affect the install block list or
+quarantine the skill's files. Use 'skill block' or 'skill quarantine' for those.
+
+Requires the gateway to be running.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSkillDisable,
 }
 
 var skillEnableCmd = &cobra.Command{
-	Use:   "enable <skill-key>",
+	Use:   "enable <skill>",
 	Short: "Enable a previously disabled skill via the OpenClaw gateway",
-	Long: `Re-enable a skill by sending a skills.update RPC to the OpenClaw gateway and
-removing the skill from the local block list.`,
+	Long: `Send a skills.update RPC to the OpenClaw gateway to re-enable a skill.
+
+This is a runtime-only action.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSkillEnable,
+}
+
+var skillBlockCmd = &cobra.Command{
+	Use:   "block <skill>",
+	Short: "Add a skill to the install block list",
+	Long: `Block a skill from being installed in the future. Blocked skills are rejected
+by 'skill install' before any scan is performed.
+
+This does not affect a skill that is already installed or running — use
+'skill disable' or 'skill quarantine' for that.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillBlock,
+}
+
+var skillAllowCmd = &cobra.Command{
+	Use:   "allow <skill>",
+	Short: "Add a skill to the install allow list",
+	Long: `Allow-list a skill so that 'skill install' skips the scan gate.
+Adding a skill to the allow list also removes it from the block list.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillAllow,
+}
+
+var skillQuarantineCmd = &cobra.Command{
+	Use:   "quarantine <skill>",
+	Short: "Quarantine a skill's files and deny it in the sandbox policy",
+	Long: `Move a skill's directory to the quarantine area and update the OpenShell
+sandbox policy to deny it. The skill's files are preserved and can be
+restored with 'skill restore'.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillQuarantine,
+}
+
+var skillRestoreCmd = &cobra.Command{
+	Use:   "restore <skill>",
+	Short: "Restore a quarantined skill",
+	Long: `Move a previously quarantined skill back to its original location and
+re-allow it in the OpenShell sandbox policy.
+
+Requires --path to specify the original skill directory.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSkillRestore,
 }
 
 var skillScanCmd = &cobra.Command{
@@ -72,8 +117,10 @@ var skillInstallCmd = &cobra.Command{
 	Use:   "install <skill>",
 	Short: "Install and scan an OpenClaw skill via clawhub",
 	Long: `Install a skill from ClawHub using 'npx @clawhub install', then scan it.
-Post-install actions (block, quarantine, or allow) are determined by the
-severity of scan findings and the skill_actions config in config.yaml.
+
+By default, install only runs the scan and reports findings — no enforcement
+actions are taken. Pass --action to apply the configured skill_actions policy
+(quarantine, disable, block) based on scan severity.
 
 Use --force to pass the --force flag to clawhub (overwrites existing).`,
 	Args: cobra.ExactArgs(1),
@@ -81,81 +128,164 @@ Use --force to pass the --force flag to clawhub (overwrites existing).`,
 }
 
 var (
-	skillDisableReason string
-	skillScanJSON      bool
-	skillInstallForce  bool
-	skillInstallJSON   bool
-	skillListJSON      bool
+	skillActionReason   string
+	skillScanJSON       bool
+	skillInstallForce   bool
+	skillInstallJSON    bool
+	skillInstallAction  bool
+	skillListJSON       bool
+	skillRestorePath    string
 )
 
 func init() {
-	skillDisableCmd.Flags().StringVar(&skillDisableReason, "reason", "", "Reason for disabling")
+	skillDisableCmd.Flags().StringVar(&skillActionReason, "reason", "", "Reason for the action")
+	skillBlockCmd.Flags().StringVar(&skillActionReason, "reason", "", "Reason for blocking")
+	skillAllowCmd.Flags().StringVar(&skillActionReason, "reason", "", "Reason for allowing")
+	skillQuarantineCmd.Flags().StringVar(&skillActionReason, "reason", "", "Reason for quarantine")
+	skillRestoreCmd.Flags().StringVar(&skillRestorePath, "path", "", "Original path to restore skill to (required)")
+	_ = skillRestoreCmd.MarkFlagRequired("path")
 	skillScanCmd.Flags().BoolVar(&skillScanJSON, "json", false, "Output scan results as JSON")
-	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Install despite MEDIUM/LOW findings")
+	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Force install (overwrites existing)")
 	skillInstallCmd.Flags().BoolVar(&skillInstallJSON, "json", false, "Output results as JSON")
+	skillInstallCmd.Flags().BoolVar(&skillInstallAction, "action", false, "Apply skill_actions policy based on scan severity")
 	skillListCmd.Flags().BoolVar(&skillListJSON, "json", false, "Output merged skill list as JSON")
 
 	skillCmd.AddCommand(skillDisableCmd)
 	skillCmd.AddCommand(skillEnableCmd)
+	skillCmd.AddCommand(skillBlockCmd)
+	skillCmd.AddCommand(skillAllowCmd)
+	skillCmd.AddCommand(skillQuarantineCmd)
+	skillCmd.AddCommand(skillRestoreCmd)
 	skillCmd.AddCommand(skillScanCmd)
 	skillCmd.AddCommand(skillInstallCmd)
 	skillCmd.AddCommand(skillListCmd)
 	rootCmd.AddCommand(skillCmd)
 }
 
+// --- Runtime actions (gateway RPC) ---
+
 func runSkillDisable(_ *cobra.Command, args []string) error {
-	skillKey := args[0]
+	skillName := filepath.Base(args[0])
 
-	pe := enforce.NewPolicyEngine(auditStore)
+	if err := disableViaGateway(skillName); err != nil {
+		return fmt.Errorf("skill disable: %w", err)
+	}
+	fmt.Printf("[skill] %q disabled via gateway RPC\n", skillName)
 
-	reason := skillDisableReason
+	reason := skillActionReason
 	if reason == "" {
 		reason = "manual disable via CLI"
 	}
-
-	// Add to local block list
-	if err := pe.Block("skill", skillKey, reason); err != nil {
-		return fmt.Errorf("skill disable: block: %w", err)
-	}
-	fmt.Printf("[skill] %q added to block list\n", skillKey)
-
-	// Also quarantine and update sandbox if available
-	shell := sandbox.NewWithFallback(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir, cfg.PolicyDir)
-	se := enforce.NewSkillEnforcer(cfg.QuarantineDir, shell)
-	_ = se.UpdateSandboxPolicy(skillKey, true)
-
-	// Disable via gateway RPC
-	if err := disableViaGateway(skillKey); err != nil {
-		fmt.Fprintf(os.Stderr, "[skill] gateway RPC failed: %v (skill is still blocked locally)\n", err)
-	} else {
-		fmt.Printf("[skill] %q disabled via gateway RPC\n", skillKey)
-	}
-
-	_ = auditLog.LogAction("skill-disable", skillKey, fmt.Sprintf("reason=%s", reason))
+	_ = auditLog.LogAction("skill-disable", skillName, fmt.Sprintf("reason=%s", reason))
 	return nil
 }
 
 func runSkillEnable(_ *cobra.Command, args []string) error {
-	skillKey := args[0]
+	skillName := filepath.Base(args[0])
 
+	if err := enableViaGateway(skillName); err != nil {
+		return fmt.Errorf("skill enable: %w", err)
+	}
+	fmt.Printf("[skill] %q enabled via gateway RPC\n", skillName)
+
+	_ = auditLog.LogAction("skill-enable", skillName, "re-enabled via CLI")
+	return nil
+}
+
+// --- Install-level actions (block/allow list in SQLite) ---
+
+func runSkillBlock(_ *cobra.Command, args []string) error {
+	skillName := filepath.Base(args[0])
 	pe := enforce.NewPolicyEngine(auditStore)
 
-	if err := pe.Unblock("skill", skillKey); err != nil {
-		return fmt.Errorf("skill enable: unblock: %w", err)
+	reason := skillActionReason
+	if reason == "" {
+		reason = "manual block via CLI"
 	}
-	fmt.Printf("[skill] %q removed from block list\n", skillKey)
+
+	if err := pe.Block("skill", skillName, reason); err != nil {
+		return fmt.Errorf("skill block: %w", err)
+	}
+	fmt.Printf("[skill] %q added to block list\n", skillName)
+
+	_ = auditLog.LogAction("skill-block", skillName, fmt.Sprintf("reason=%s", reason))
+	return nil
+}
+
+func runSkillAllow(_ *cobra.Command, args []string) error {
+	skillName := filepath.Base(args[0])
+	pe := enforce.NewPolicyEngine(auditStore)
+
+	reason := skillActionReason
+	if reason == "" {
+		reason = "manual allow via CLI"
+	}
+
+	if err := pe.Allow("skill", skillName, reason); err != nil {
+		return fmt.Errorf("skill allow: %w", err)
+	}
+	fmt.Printf("[skill] %q added to allow list\n", skillName)
+
+	_ = auditLog.LogAction("skill-allow", skillName, fmt.Sprintf("reason=%s", reason))
+	return nil
+}
+
+// --- File-level actions (quarantine / restore) ---
+
+func runSkillQuarantine(_ *cobra.Command, args []string) error {
+	skillArg := args[0]
+	skillName := filepath.Base(skillArg)
+
+	skillPath := skillArg
+	if !filepath.IsAbs(skillPath) {
+		resolved := resolveInstalledSkillPath(skillName)
+		if resolved == "" {
+			return fmt.Errorf("skill quarantine: could not locate skill %q — provide an absolute path", skillName)
+		}
+		skillPath = resolved
+	}
 
 	shell := sandbox.NewWithFallback(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir, cfg.PolicyDir)
 	se := enforce.NewSkillEnforcer(cfg.QuarantineDir, shell)
-	_ = se.UpdateSandboxPolicy(skillKey, false)
 
-	if err := enableViaGateway(skillKey); err != nil {
-		fmt.Fprintf(os.Stderr, "[skill] gateway RPC failed: %v (skill is still unblocked locally)\n", err)
-	} else {
-		fmt.Printf("[skill] %q enabled via gateway RPC\n", skillKey)
+	dest, err := se.Quarantine(skillPath)
+	if err != nil {
+		return fmt.Errorf("skill quarantine: %w", err)
+	}
+	fmt.Printf("[skill] %q quarantined to %s\n", skillName, dest)
+
+	if err := se.UpdateSandboxPolicy(skillName, true); err != nil {
+		fmt.Fprintf(os.Stderr, "[skill] sandbox policy update failed: %v\n", err)
 	}
 
-	_ = auditLog.LogAction("skill-enable", skillKey, "re-enabled via CLI")
+	reason := skillActionReason
+	if reason == "" {
+		reason = "manual quarantine via CLI"
+	}
+	_ = auditLog.LogAction("skill-quarantine", skillName, fmt.Sprintf("reason=%s, dest=%s", reason, dest))
+	return nil
+}
+
+func runSkillRestore(_ *cobra.Command, args []string) error {
+	skillName := filepath.Base(args[0])
+
+	shell := sandbox.NewWithFallback(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir, cfg.PolicyDir)
+	se := enforce.NewSkillEnforcer(cfg.QuarantineDir, shell)
+
+	if !se.IsQuarantined(skillName) {
+		return fmt.Errorf("skill restore: %q is not quarantined", skillName)
+	}
+
+	if err := se.Restore(skillName, skillRestorePath); err != nil {
+		return fmt.Errorf("skill restore: %w", err)
+	}
+	fmt.Printf("[skill] %q restored to %s\n", skillName, skillRestorePath)
+
+	if err := se.UpdateSandboxPolicy(skillName, false); err != nil {
+		fmt.Fprintf(os.Stderr, "[skill] sandbox policy update failed: %v\n", err)
+	}
+
+	_ = auditLog.LogAction("skill-restore", skillName, fmt.Sprintf("restored to %s", skillRestorePath))
 	return nil
 }
 
@@ -317,7 +447,7 @@ func runSkillScanAll(cmd *cobra.Command) error {
 		for _, v := range allVerdicts {
 			if v.Clean {
 				clean++
-			} else if cfg.SkillActions.ShouldBlock(string(v.MaxSeverity)) || cfg.SkillActions.ShouldQuarantine(string(v.MaxSeverity)) {
+			} else if cfg.SkillActions.ShouldDisable(string(v.MaxSeverity)) || cfg.SkillActions.ShouldQuarantine(string(v.MaxSeverity)) {
 				rejects++
 			} else {
 				warnings++
@@ -383,7 +513,7 @@ func printSkillVerdict(verdict *skillVerdict) {
 	}
 	if verdict.Clean {
 		fmt.Println("  Verdict: CLEAN")
-	} else if cfg.SkillActions.ShouldBlock(string(verdict.MaxSeverity)) || cfg.SkillActions.ShouldQuarantine(string(verdict.MaxSeverity)) {
+	} else if cfg.SkillActions.ShouldDisable(string(verdict.MaxSeverity)) || cfg.SkillActions.ShouldQuarantine(string(verdict.MaxSeverity)) {
 		fmt.Printf("  Verdict: REJECT (%d %s findings)\n", verdict.TotalFindings, verdict.MaxSeverity)
 	} else {
 		fmt.Printf("  Verdict: WARNING (%d %s findings)\n", verdict.TotalFindings, verdict.MaxSeverity)
@@ -641,14 +771,14 @@ func runSkillInstall(cmd *cobra.Command, args []string) error {
 
 	pe := enforce.NewPolicyEngine(auditStore)
 
-	// 1. Block list check
+	// Block list check always applies
 	blocked, err := pe.IsBlocked("skill", skillName)
 	if err == nil && blocked {
 		_ = auditLog.LogAction("install-rejected", skillName, "reason=blocked")
-		return fmt.Errorf("skill %q is on the block list — run 'defenseclaw skill enable %s' to unblock", skillName, skillName)
+		return fmt.Errorf("skill %q is on the block list — run 'defenseclaw skill allow %s' to unblock", skillName, skillName)
 	}
 
-	// 2. Allow list check — skip scan
+	// Allow list check — skip scan
 	allowed, err := pe.IsAllowed("skill", skillName)
 	if err == nil && allowed {
 		fmt.Printf("[install] %q is on the allow list — skipping scan\n", skillName)
@@ -656,13 +786,13 @@ func runSkillInstall(cmd *cobra.Command, args []string) error {
 		return runClawHubInstall(skillName, skillInstallForce)
 	}
 
-	// 3. Install via clawhub
+	// Install via clawhub
 	fmt.Printf("[install] installing %q via clawhub...\n", skillName)
 	if err := runClawHubInstall(skillName, skillInstallForce); err != nil {
 		return err
 	}
 
-	// 4. Locate and scan the installed skill
+	// Locate and scan the installed skill
 	skillPath := resolveInstalledSkillPath(skillName)
 	if skillPath == "" {
 		fmt.Fprintf(os.Stderr, "[install] warning: could not locate installed skill for scan\n")
@@ -681,45 +811,62 @@ func runSkillInstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 5. Handle scan results via config-driven severity actions
 	if verdict.Clean {
 		fmt.Printf("[install] %q installed and clean\n", skillName)
 		_ = auditLog.LogAction("install-clean", skillName, "verdict=clean")
 		return nil
 	}
 
-	action := cfg.SkillActions.ForSeverity(string(verdict.MaxSeverity))
 	detail := fmt.Sprintf("severity=%s findings=%d", verdict.MaxSeverity, verdict.TotalFindings)
+
+	if !skillInstallAction {
+		fmt.Printf("[install] %d %s findings in %q (no action taken — pass --action to enforce)\n",
+			verdict.TotalFindings, verdict.MaxSeverity, skillName)
+		_ = auditLog.LogAction("install-warning", skillName, detail)
+		return nil
+	}
+
+	// --action: apply configured skill_actions policy
+	action := cfg.SkillActions.ForSeverity(string(verdict.MaxSeverity))
 	shouldQuarantine := action.File == config.FileActionQuarantine
-	shouldBlock := action.Runtime == config.RuntimeBlock
+	shouldDisable := action.Runtime == config.RuntimeDisable
+	shouldBlock := action.Install == config.InstallBlock
 
 	shell := sandbox.NewWithFallback(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir, cfg.PolicyDir)
 	se := enforce.NewSkillEnforcer(cfg.QuarantineDir, shell)
 
+	var actions []string
+
 	if shouldQuarantine {
-		_, _ = se.Quarantine(skillPath)
+		if dest, qErr := se.Quarantine(skillPath); qErr != nil {
+			fmt.Fprintf(os.Stderr, "[install] quarantine failed: %v\n", qErr)
+		} else {
+			actions = append(actions, fmt.Sprintf("quarantined to %s", dest))
+		}
+	}
+	if shouldDisable {
+		if dErr := disableViaGateway(skillName); dErr != nil {
+			fmt.Fprintf(os.Stderr, "[install] gateway disable failed: %v\n", dErr)
+		} else {
+			actions = append(actions, "disabled via gateway")
+		}
 	}
 	if shouldBlock {
-		_ = pe.Block("skill", skillName,
-			fmt.Sprintf("post-install scan: %d findings, max=%s", verdict.TotalFindings, verdict.MaxSeverity))
-		_ = se.UpdateSandboxPolicy(skillName, true)
+		blockReason := fmt.Sprintf("post-install scan: %d findings, max=%s", verdict.TotalFindings, verdict.MaxSeverity)
+		_ = pe.Block("skill", skillName, blockReason)
+		actions = append(actions, "added to block list")
 	}
 
-	switch {
-	case shouldQuarantine && shouldBlock:
-		_ = auditLog.LogAction("install-quarantined", skillName, detail)
-		return fmt.Errorf("skill %q quarantined and blocked after scan (%s findings)", skillName, verdict.MaxSeverity)
-	case shouldQuarantine:
-		_ = auditLog.LogAction("install-quarantined", skillName, detail)
-		return fmt.Errorf("skill %q quarantined after scan (%s findings)", skillName, verdict.MaxSeverity)
-	case shouldBlock:
-		_ = auditLog.LogAction("install-blocked", skillName, detail)
-		return fmt.Errorf("skill %q blocked after scan (%s findings)", skillName, verdict.MaxSeverity)
-	default:
-		fmt.Printf("[install] warning: %d %s findings in %q\n", verdict.TotalFindings, verdict.MaxSeverity, skillName)
-		_ = auditLog.LogAction("install-warning", skillName, detail)
-		return nil
+	if len(actions) > 0 {
+		fmt.Printf("[install] %q: %s (%s)\n", skillName, strings.Join(actions, ", "), detail)
+		_ = auditLog.LogAction("install-enforced", skillName, detail+"; "+strings.Join(actions, ", "))
+		return fmt.Errorf("skill %q had %s findings — actions applied: %s",
+			skillName, verdict.MaxSeverity, strings.Join(actions, ", "))
 	}
+
+	fmt.Printf("[install] warning: %d %s findings in %q\n", verdict.TotalFindings, verdict.MaxSeverity, skillName)
+	_ = auditLog.LogAction("install-warning", skillName, detail)
+	return nil
 }
 
 func runClawHubInstall(skillName string, force bool) error {

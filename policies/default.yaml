@@ -9,20 +9,25 @@ admission:
 
 skill_actions:
   critical:
-    runtime: block
     file: quarantine
+    runtime: disable
+    install: block
   high:
-    runtime: block
     file: quarantine
+    runtime: disable
+    install: block
   medium:
-    runtime: allow
     file: none
+    runtime: enable
+    install: none
   low:
-    runtime: allow
     file: none
+    runtime: enable
+    install: none
   info:
-    runtime: allow
     file: none
+    runtime: enable
+    install: none
 
 enforcement:
   update_sandbox_policy: true
