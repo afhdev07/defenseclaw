@@ -16,7 +16,8 @@ readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 readonly MIN_GO_VERSION="1.22"
 readonly MIN_PYTHON_VERSION="3.10"
-readonly RECOMMENDED_PYTHON_VERSION="3.11"
+readonly MAX_PYTHON_VERSION="3.13"
+readonly PREFERRED_PYTHON_VERSIONS=("3.12" "3.11" "3.13" "3.10")
 
 readonly VENV_DIR="${REPO_ROOT}/.venv"
 readonly INSTALL_DIR="${HOME}/.local/bin"
@@ -53,6 +54,21 @@ version_gte() {
     local v1="${1:-0}"
     local v2="${2:-0}"
     printf '%s\n%s' "${v2}" "${v1}" | sort -V -C
+}
+
+version_lte() {
+    # Returns 0 if $1 <= $2 (version comparison)
+    local v1="${1:-0}"
+    local v2="${2:-0}"
+    printf '%s\n%s' "${v1}" "${v2}" | sort -V -C
+}
+
+version_in_range() {
+    # Returns 0 if $1 is between $2 (min) and $3 (max) inclusive
+    local ver="${1:-0}"
+    local min="${2:-0}"
+    local max="${3:-999}"
+    version_gte "${ver}" "${min}" && version_lte "${ver}" "${max}"
 }
 
 extract_version() {
@@ -151,41 +167,84 @@ check_python() {
     local python_cmd=""
     local python_version=""
     
-    # Try python3 first, then python
-    for cmd in python3 python; do
-        if command_exists "${cmd}"; then
-            local ver
-            ver="$(extract_version "$("${cmd}" --version 2>&1)")"
-            if version_gte "${ver}" "${MIN_PYTHON_VERSION}"; then
-                python_cmd="${cmd}"
-                python_version="${ver}"
-                break
+    # Strategy: prefer stable Python versions (3.12, 3.11) over bleeding-edge (3.14+)
+    # Many packages don't have wheels for the newest Python versions yet.
+    
+    # 1. If uv is available, try to find preferred versions via uv
+    if command_exists uv; then
+        for preferred in "${PREFERRED_PYTHON_VERSIONS[@]}"; do
+            local uv_python
+            uv_python="$(uv python find "${preferred}" 2>/dev/null || true)"
+            if [[ -n "${uv_python}" ]] && [[ -x "${uv_python}" ]]; then
+                local ver
+                ver="$(extract_version "$("${uv_python}" --version 2>&1)")"
+                if version_in_range "${ver}" "${MIN_PYTHON_VERSION}" "${MAX_PYTHON_VERSION}"; then
+                    python_cmd="${uv_python}"
+                    python_version="${ver}"
+                    log_info "Found Python ${ver} via uv"
+                    break
+                fi
             fi
-        fi
-    done
+        done
+    fi
+    
+    # 2. Try pythonX.Y commands for preferred versions
+    if [[ -z "${python_cmd}" ]]; then
+        for preferred in "${PREFERRED_PYTHON_VERSIONS[@]}"; do
+            local cmd="python${preferred}"
+            if command_exists "${cmd}"; then
+                local ver
+                ver="$(extract_version "$("${cmd}" --version 2>&1)")"
+                if version_in_range "${ver}" "${MIN_PYTHON_VERSION}" "${MAX_PYTHON_VERSION}"; then
+                    python_cmd="${cmd}"
+                    python_version="${ver}"
+                    break
+                fi
+            fi
+        done
+    fi
+    
+    # 3. Fall back to python3/python, but only if within supported range
+    if [[ -z "${python_cmd}" ]]; then
+        for cmd in python3 python; do
+            if command_exists "${cmd}"; then
+                local ver
+                ver="$(extract_version "$("${cmd}" --version 2>&1)")"
+                if version_in_range "${ver}" "${MIN_PYTHON_VERSION}" "${MAX_PYTHON_VERSION}"; then
+                    python_cmd="${cmd}"
+                    python_version="${ver}"
+                    break
+                elif version_gte "${ver}" "${MIN_PYTHON_VERSION}"; then
+                    # Version is too new — warn but don't use it
+                    log_warn "Python ${ver} found but may be too new (max supported: ${MAX_PYTHON_VERSION})"
+                    log_warn "Some dependencies may not have wheels for Python ${ver} yet."
+                fi
+            fi
+        done
+    fi
     
     if [[ -z "${python_cmd}" ]]; then
-        log_warn "Python ${MIN_PYTHON_VERSION}+ not found."
+        log_warn "Python ${MIN_PYTHON_VERSION}-${MAX_PYTHON_VERSION} not found."
         echo ""
-        echo "  Install Python from https://www.python.org/downloads/"
+        echo "  Install a supported Python version:"
         echo ""
         if [[ "${OS}" == "darwin" ]]; then
-            echo "  Or via Homebrew:"
             echo "    brew install python@3.12"
             echo ""
+            echo "  Or if you have uv installed:"
+            echo "    uv python install 3.12"
+            echo ""
+        else
+            echo "    https://www.python.org/downloads/"
+            echo ""
         fi
-        die "Python ${MIN_PYTHON_VERSION}+ is required."
+        die "Python ${MIN_PYTHON_VERSION}-${MAX_PYTHON_VERSION} is required."
     fi
     
     PYTHON_CMD="${python_cmd}"
     PYTHON_VERSION="${python_version}"
     
-    if version_gte "${python_version}" "${RECOMMENDED_PYTHON_VERSION}"; then
-        log_success "Python ${python_version} found (${RECOMMENDED_PYTHON_VERSION}+ recommended)"
-    else
-        log_success "Python ${python_version} found (>= ${MIN_PYTHON_VERSION} required)"
-        log_warn "Python ${RECOMMENDED_PYTHON_VERSION}+ is recommended for best compatibility."
-    fi
+    log_success "Python ${python_version} found (supported: ${MIN_PYTHON_VERSION}-${MAX_PYTHON_VERSION})"
 }
 
 check_uv_or_pip() {
@@ -267,12 +326,13 @@ setup_python_venv() {
     fi
     
     if [[ "${PACKAGE_MANAGER}" == "uv" ]]; then
-        uv venv "${VENV_DIR}"
+        # Explicitly specify the Python version to avoid using bleeding-edge versions
+        uv venv "${VENV_DIR}" --python "${PYTHON_VERSION}"
+        log_success "Created virtual environment at ${VENV_DIR} (Python ${PYTHON_VERSION} via uv)"
     else
         "${PYTHON_CMD}" -m venv "${VENV_DIR}"
+        log_success "Created virtual environment at ${VENV_DIR}"
     fi
-    
-    log_success "Created virtual environment at ${VENV_DIR}"
 }
 
 install_python_cli() {
@@ -292,6 +352,16 @@ install_python_cli() {
     ${pip_cmd} -e "cli[tui]"
     
     log_success "Python CLI installed (editable mode)"
+    
+    # Try to install scanner extra (may fail if litellm is unavailable on PyPI)
+    log_info "Attempting to install scanner dependencies..."
+    if ${pip_cmd} -e "cli[scanner]" 2>/dev/null; then
+        log_success "Scanner dependencies installed"
+    else
+        log_warn "Scanner dependencies unavailable (litellm may be temporarily removed from PyPI)"
+        log_warn "The CLI will work, but 'defenseclaw scan' requires the scanner."
+        log_warn "Check https://pypi.org/project/litellm/ for status."
+    fi
     
     # Verify the CLI works
     if "${VENV_DIR}/bin/defenseclaw" --help &> /dev/null; then
