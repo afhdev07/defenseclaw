@@ -21,17 +21,14 @@ func SetVersion(v string) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "defenseclaw",
-	Short: "Enterprise governance layer for OpenClaw",
-	Long: `DefenseClaw secures OpenClaw deployments by scanning skills, MCP servers,
-and code before they run, enforcing block/allow lists, and providing a
-terminal dashboard for governance.`,
-	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-		switch cmd.Name() {
-		case "init", "help", "completion":
-			return nil
-		}
+	Use:   "defenseclaw-gateway",
+	Short: "DefenseClaw gateway sidecar daemon",
+	Long: `DefenseClaw gateway sidecar — connects to the OpenClaw gateway WebSocket,
+monitors tool_call and tool_result events, enforces policy in real time,
+and exposes a local REST API for the Python CLI.
 
+Run without arguments to start the sidecar daemon.`,
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		var err error
 		cfg, err = config.Load()
 		if err != nil {
@@ -55,6 +52,7 @@ terminal dashboard for governance.`,
 			auditStore.Close()
 		}
 	},
+	RunE:         runSidecar,
 	SilenceUsage: true,
 }
 

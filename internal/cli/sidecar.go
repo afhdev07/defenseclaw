@@ -23,25 +23,7 @@ var (
 	sidecarPort  int
 )
 
-var sidecarCmd = &cobra.Command{
-	Use:   "sidecar",
-	Short: "Run the gateway sidecar — connect to the OpenClaw gateway and enforce policy in real time",
-	Long: `Start a long-running sidecar process that connects to the OpenClaw gateway
-WebSocket as an operator client. The sidecar monitors tool_call and tool_result
-events, handles exec.approval requests, and can disable skills via the gateway
-RPC protocol.
-
-The sidecar runs three subsystems as independent goroutines:
-  1. Gateway connection loop — WebSocket connection with auto-reconnect
-  2. Skill/MCP watcher — filesystem watcher for new installs (opt-in)
-  3. REST API server — local HTTP API for CLI and plugin communication
-
-Configure the gateway address and token in ~/.defenseclaw/config.yaml under the
-"gateway" section, or use the --token, --host, and --port flags.`,
-	RunE: runSidecar,
-}
-
-var sidecarStatusCmd = &cobra.Command{
+var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show health of the running sidecar's subsystems",
 	Long: `Query the sidecar's REST API to display the health of all three subsystems:
@@ -52,11 +34,10 @@ The sidecar must be running for this command to work.`,
 }
 
 func init() {
-	sidecarCmd.Flags().StringVar(&sidecarToken, "token", "", "Gateway auth token (overrides config)")
-	sidecarCmd.Flags().StringVar(&sidecarHost, "host", "", "Gateway host (default: from config)")
-	sidecarCmd.Flags().IntVar(&sidecarPort, "port", 0, "Gateway port (default: from config)")
-	sidecarCmd.AddCommand(sidecarStatusCmd)
-	rootCmd.AddCommand(sidecarCmd)
+	rootCmd.Flags().StringVar(&sidecarToken, "token", "", "Gateway auth token (overrides config)")
+	rootCmd.Flags().StringVar(&sidecarHost, "host", "", "Gateway host (default: from config)")
+	rootCmd.Flags().IntVar(&sidecarPort, "port", 0, "Gateway port (default: from config)")
+	rootCmd.AddCommand(statusCmd)
 }
 
 func runSidecar(_ *cobra.Command, _ []string) error {

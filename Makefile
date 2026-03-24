@@ -1,45 +1,46 @@
 BINARY      := defenseclaw
+GATEWAY     := defenseclaw-gateway
 VERSION     := 0.2.0
 GOFLAGS     := -ldflags "-X main.version=$(VERSION)"
+VENV        := .venv
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: build build-all build-linux-arm64 build-linux-amd64 build-darwin-arm64 build-darwin-amd64 test lint clean vet install
+.PHONY: pycli gateway gateway-install test lint clean
 
-build:
-	go build $(GOFLAGS) -o $(BINARY) ./cmd/defenseclaw
+pycli:
+	@command -v uv >/dev/null 2>&1 || { echo "uv not found — install from https://docs.astral.sh/uv/"; exit 1; }
+	uv venv $(VENV)
+	uv pip install -e cli --python $(VENV)/bin/python
+	@echo ""
+	@echo "Done. Activate the environment and run:"
+	@echo "  source $(VENV)/bin/activate"
+	@echo "  defenseclaw --help"
 
-build-all: build-linux-arm64 build-linux-amd64 build-darwin-arm64 build-darwin-amd64
+gateway:
+	go build $(GOFLAGS) -o $(GATEWAY) ./cmd/defenseclaw
+	@echo "Built $(GATEWAY)"
+	@echo "  Run with: ./$(GATEWAY)"
+	@echo "  Check status: ./$(GATEWAY) status"
 
-build-linux-arm64:
-	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -o $(BINARY)-linux-arm64 ./cmd/defenseclaw
+gateway-run: gateway
+	./$(GATEWAY)
 
-build-linux-amd64:
-	GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -o $(BINARY)-linux-amd64 ./cmd/defenseclaw
-
-build-darwin-arm64:
-	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -o $(BINARY)-darwin-arm64 ./cmd/defenseclaw
-
-build-darwin-amd64:
-	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -o $(BINARY)-darwin-amd64 ./cmd/defenseclaw
-
-test:
-	go test -race ./...
-
-vet:
-	go vet ./...
-
-lint:
-	golangci-lint run
-
-clean:
-	rm -f $(BINARY) $(BINARY)-*
-
-install: build
+gateway-install: gateway
 	@mkdir -p $(INSTALL_DIR)
-	@cp $(BINARY) $(INSTALL_DIR)/$(BINARY)
-	@echo "Installed $(BINARY) to $(INSTALL_DIR)"
+	@cp $(GATEWAY) $(INSTALL_DIR)/$(GATEWAY)
+	@echo "Installed $(GATEWAY) to $(INSTALL_DIR)"
 	@if ! echo "$$PATH" | grep -q "$(INSTALL_DIR)"; then \
 		echo ""; \
 		echo "Add $(INSTALL_DIR) to your PATH:"; \
 		echo "  export PATH=\"$(INSTALL_DIR):\$$PATH\""; \
 	fi
+
+test:
+	$(VENV)/bin/python -m unittest discover -s cli/tests -v
+
+lint:
+	$(VENV)/bin/python -m py_compile cli/defenseclaw/main.py
+
+clean:
+	rm -f $(GATEWAY) $(GATEWAY)-*
+	rm -rf $(VENV) cli/*.egg-info cli/defenseclaw/__pycache__ cli/defenseclaw/**/__pycache__
