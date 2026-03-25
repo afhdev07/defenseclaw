@@ -70,13 +70,14 @@ No config file edits required.
 | `--enable-telemetry` | Start collector + enable OTel in gateway | off |
 | `--access-key TOKEN` | Splunk access token (required with `--enable-telemetry`) | — |
 | `--realm REALM` | Splunk ingest realm | `us1` |
+| `--app-name NAME` | OTel service name (appears in Splunk APM) | `defenseclaw` |
 
 ```bash
-# US West realm
-./scripts/start.sh --enable-telemetry --access-key <TOKEN> --realm us0
+# Custom app name + US West realm
+./scripts/start.sh --enable-telemetry --access-key <TOKEN> --app-name my-app --realm us0
 
-# Default realm (us1)
-./scripts/start.sh --enable-telemetry --access-key <TOKEN>
+# Default realm (us1) with custom app name
+./scripts/start.sh --enable-telemetry --access-key <TOKEN> --app-name pavan-defenceapp
 ```
 
 Press `Ctrl+C` to stop — both collector and gateway shut down cleanly.
@@ -126,8 +127,19 @@ The gateway reads these env vars at startup (set automatically by `start.sh` whe
 | `DEFENSECLAW_OTEL_ENABLED` | Enable/disable OTel (`true`/`false`) |
 | `DEFENSECLAW_OTEL_ENDPOINT` | OTel collector endpoint |
 | `DEFENSECLAW_OTEL_PROTOCOL` | Export protocol (`grpc` or `http`) |
+| `DEFENSECLAW_OTEL_TLS_INSECURE` | Skip TLS for local collector (`true`/`false`) |
+| `OTEL_SERVICE_NAME` | Override `service.name` resource attribute |
 
 These override the corresponding values in `~/.defenseclaw/config.yaml` without modifying the file.
+
+`service.name` can also be set in config via `otel.resource.attributes`:
+
+```yaml
+otel:
+  resource:
+    attributes:
+      service.name: pavan-defenceapp
+```
 
 ## Build Individual Components
 
