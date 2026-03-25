@@ -72,17 +72,16 @@ export default definePluginEntry(({ api, registerService, registerCommand }) => 
 
   registerService("defenseclaw-watcher", {
     start: async () => {
-      const syncResult = await enforcer.syncFromDaemon().catch((err) => {
+      try {
+        await enforcer.syncFromDaemon();
+        console.log("[defenseclaw] block/allow lists synced from sidecar");
+      } catch (err) {
         console.error(
           `[defenseclaw] failed to sync from sidecar: ${err instanceof Error ? err.message : String(err)}`,
         );
         console.error(
           "[defenseclaw] WARNING: operating without daemon sync — enforcement may be stale",
         );
-      });
-
-      if (syncResult === undefined) {
-        console.log("[defenseclaw] block/allow lists synced from sidecar");
       }
 
       return {

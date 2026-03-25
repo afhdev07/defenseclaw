@@ -219,7 +219,10 @@ class DefenseClawGuardrail(CustomGuardrail):
             req = urllib.request.Request(
                 f"http://127.0.0.1:{int(port)}/v1/guardrail/event",
                 data=data,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-DefenseClaw-Client": "litellm-guardrail",
+                },
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=2)
