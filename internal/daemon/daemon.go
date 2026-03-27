@@ -119,33 +119,35 @@ func (d *Daemon) Start(args []string) (int, error) {
 		return pid, ErrAlreadyRunning
 	}
 
+	d.killStaleProcesses()
+
 	if err := os.MkdirAll(d.dataDir, 0700); err != nil {
 		return 0, fmt.Errorf("daemon: create data dir: %w", err)
 	}
 
-	logFile, err := os.OpenFile(d.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logWriter, err := os.OpenFile(d.logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return 0, fmt.Errorf("daemon: open log file: %w", err)
 	}
 
 	executable, err := os.Executable()
 	if err != nil {
-		logFile.Close()
+		_ = logWriter.Close()
 		return 0, fmt.Errorf("daemon: get executable: %w", err)
 	}
 
 	// Open /dev/null for stdin
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
-		logFile.Close()
+		_ = logWriter.Close()
 		return 0, fmt.Errorf("daemon: open /dev/null: %w", err)
 	}
 
 	cmd := exec.Command(executable, args...)
 	cmd.Env = append(os.Environ(), EnvDaemon+"=1")
 	cmd.Stdin = devNull
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = logWriter
+	cmd.Stderr = logWriter
 	cmd.Dir = d.dataDir
 
 	// Detach from parent process group (platform-specific)
@@ -153,7 +155,7 @@ func (d *Daemon) Start(args []string) (int, error) {
 
 	if err := cmd.Start(); err != nil {
 		devNull.Close()
-		logFile.Close()
+		_ = logWriter.Close()
 		return 0, fmt.Errorf("daemon: start process: %w", err)
 	}
 
@@ -162,7 +164,7 @@ func (d *Daemon) Start(args []string) (int, error) {
 	if err := d.writePIDInfo(pid, executable); err != nil {
 		_ = cmd.Process.Kill()
 		devNull.Close()
-		logFile.Close()
+		_ = logWriter.Close()
 		return 0, fmt.Errorf("daemon: write pid: %w", err)
 	}
 
@@ -170,7 +172,7 @@ func (d *Daemon) Start(args []string) (int, error) {
 	go func() {
 		_ = cmd.Wait()
 		devNull.Close()
-		logFile.Close()
+		_ = logWriter.Close()
 	}()
 
 	// Give the child a moment to start and verify it's running

@@ -333,7 +333,8 @@ def _check_splunk(cfg, r: _DoctorResult) -> None:
         r.record("skip")
         return
 
-    if not cfg.splunk.hec_endpoint or not cfg.splunk.hec_token:
+    hec_token = cfg.splunk.resolved_hec_token()
+    if not cfg.splunk.hec_endpoint or not hec_token:
         _emit("fail", "Splunk HEC", "endpoint or token missing")
         r.record("fail")
         return
@@ -342,7 +343,7 @@ def _check_splunk(cfg, r: _DoctorResult) -> None:
         cfg.splunk.hec_endpoint,
         method="POST",
         headers={
-            "Authorization": f"Splunk {cfg.splunk.hec_token}",
+            "Authorization": f"Splunk {hec_token}",
             "Content-Type": "application/json",
         },
         body=json.dumps({"event": "defenseclaw-doctor-probe", "sourcetype": "_json"}).encode(),
@@ -365,14 +366,15 @@ def _check_splunk(cfg, r: _DoctorResult) -> None:
 
 def _check_virustotal(cfg, r: _DoctorResult) -> None:
     sc = cfg.scanners.skill_scanner
-    if not sc.use_virustotal or not sc.virustotal_api_key:
+    vt_key = sc.resolved_virustotal_api_key()
+    if not sc.use_virustotal or not vt_key:
         _emit("skip", "VirusTotal API", "not enabled")
         r.record("skip")
         return
 
     code, _ = _http_probe(
         "https://www.virustotal.com/api/v3/files/upload_url",
-        headers={"x-apikey": sc.virustotal_api_key},
+        headers={"x-apikey": vt_key},
         timeout=10.0,
     )
 

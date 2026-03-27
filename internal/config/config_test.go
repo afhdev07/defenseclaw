@@ -8,6 +8,39 @@ import (
 	"testing"
 )
 
+func TestGatewayConfigResolvedToken(t *testing.T) {
+	t.Run("explicit token env", func(t *testing.T) {
+		t.Setenv("MY_GATEWAY_TOKEN", "from-custom-env")
+		t.Setenv("OPENCLAW_GATEWAY_TOKEN", "should-not-use")
+		g := GatewayConfig{TokenEnv: "MY_GATEWAY_TOKEN", Token: "inline"}
+		if got := g.ResolvedToken(); got != "from-custom-env" {
+			t.Errorf("got %q, want from-custom-env", got)
+		}
+	})
+	t.Run("empty token env uses openclaw env", func(t *testing.T) {
+		t.Setenv("OPENCLAW_GATEWAY_TOKEN", "from-dotenv-style")
+		g := GatewayConfig{TokenEnv: "", Token: ""}
+		if got := g.ResolvedToken(); got != "from-dotenv-style" {
+			t.Errorf("got %q, want from-dotenv-style", got)
+		}
+	})
+	t.Run("empty token env falls back to inline token", func(t *testing.T) {
+		t.Setenv("OPENCLAW_GATEWAY_TOKEN", "")
+		g := GatewayConfig{TokenEnv: "", Token: "plain"}
+		if got := g.ResolvedToken(); got != "plain" {
+			t.Errorf("got %q, want plain", got)
+		}
+	})
+	t.Run("custom token env empty does not use openclaw env", func(t *testing.T) {
+		t.Setenv("MY_GATEWAY_TOKEN", "")
+		t.Setenv("OPENCLAW_GATEWAY_TOKEN", "wrong")
+		g := GatewayConfig{TokenEnv: "MY_GATEWAY_TOKEN", Token: "fallback"}
+		if got := g.ResolvedToken(); got != "fallback" {
+			t.Errorf("got %q, want fallback", got)
+		}
+	})
+}
+
 func TestDefaultDataPath(t *testing.T) {
 	dp := DefaultDataPath()
 	if !filepath.IsAbs(dp) {

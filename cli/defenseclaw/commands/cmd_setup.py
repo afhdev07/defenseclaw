@@ -81,7 +81,7 @@ def setup_skill_scanner(
         if lenient is not None:
             sc.lenient = lenient
     else:
-        _interactive_setup(sc, llm, aid)
+        _interactive_setup(sc, llm, aid, app.cfg.data_dir)
 
     app.cfg.save()
     _print_summary(sc, llm, aid)
@@ -106,7 +106,7 @@ def setup_skill_scanner(
         app.logger.log_action("setup-skill-scanner", "config", " ".join(parts))
 
 
-def _interactive_setup(sc, llm, aid) -> None:
+def _interactive_setup(sc, llm, aid, data_dir: str) -> None:
     click.echo()
     click.echo("  Skill Scanner Configuration")
     click.echo("  ────────────────────────────")
@@ -117,20 +117,31 @@ def _interactive_setup(sc, llm, aid) -> None:
     sc.use_llm = click.confirm("  Enable LLM analyzer (semantic analysis)?", default=sc.use_llm)
 
     if sc.use_llm:
-        _configure_inspect_llm(llm)
+        _configure_inspect_llm(llm, data_dir)
         sc.enable_meta = click.confirm("  Enable meta-analyzer (false positive filtering)?", default=sc.enable_meta)
         sc.llm_consensus_runs = click.prompt(
             "  LLM consensus runs (0 = disabled)", type=int, default=sc.llm_consensus_runs,
         )
+    else:
+        llm.api_key = ""
+        llm.api_key_env = ""
 
     sc.use_trigger = click.confirm("  Enable trigger analyzer (vague description checks)?", default=sc.use_trigger)
     sc.use_virustotal = click.confirm("  Enable VirusTotal binary scanner?", default=sc.use_virustotal)
     if sc.use_virustotal:
-        sc.virustotal_api_key = _prompt_secret("VIRUSTOTAL_API_KEY", sc.virustotal_api_key)
+        _prompt_and_save_secret("VIRUSTOTAL_API_KEY", sc.virustotal_api_key, data_dir)
+        sc.virustotal_api_key = ""
+        sc.virustotal_api_key_env = "VIRUSTOTAL_API_KEY"
+    else:
+        sc.virustotal_api_key = ""
+        sc.virustotal_api_key_env = ""
 
     sc.use_aidefense = click.confirm("  Enable Cisco AI Defense analyzer?", default=sc.use_aidefense)
     if sc.use_aidefense:
-        _configure_cisco_ai_defense(aid)
+        _configure_cisco_ai_defense(aid, data_dir)
+    else:
+        aid.api_key = ""
+        aid.api_key_env = ""
 
     click.echo()
     choices = ["strict", "balanced", "permissive"]
@@ -146,14 +157,21 @@ def _interactive_setup(sc, llm, aid) -> None:
     sc.lenient = click.confirm("  Lenient mode (tolerate malformed skills)?", default=sc.lenient)
 
 
-def _configure_inspect_llm(llm) -> None:
-    """Prompt for shared inspect_llm settings (provider, model, API key)."""
+def _configure_inspect_llm(llm, data_dir: str) -> None:
+    """Prompt for shared inspect_llm settings (provider, model, API key).
+
+    The API key is stored in ~/.defenseclaw/.env, not in config.yaml.
+    """
+    from defenseclaw.guardrail import detect_api_key_env
     llm.provider = click.prompt(
         "  LLM provider (anthropic/openai)",
         default=llm.provider or "anthropic",
     )
     llm.model = click.prompt("  LLM model name", default=llm.model or "", show_default=False)
-    llm.api_key = _prompt_secret("LLM_API_KEY", llm.api_key)
+    env_name = detect_api_key_env(f"{llm.provider}/{llm.model}")
+    _prompt_and_save_secret(env_name, llm.api_key, data_dir)
+    llm.api_key = ""
+    llm.api_key_env = env_name
     llm.base_url = click.prompt(
         "  LLM base URL (leave blank to use provider default)",
         default=llm.base_url or "", show_default=False,
@@ -162,27 +180,38 @@ def _configure_inspect_llm(llm) -> None:
     llm.max_retries = click.prompt("  LLM max retries", type=int, default=llm.max_retries)
 
 
-def _configure_cisco_ai_defense(aid) -> None:
-    """Prompt for shared cisco_ai_defense settings (endpoint, API key)."""
+def _configure_cisco_ai_defense(aid, data_dir: str) -> None:
+    """Prompt for shared cisco_ai_defense settings (endpoint, API key).
+
+    The API key is stored in ~/.defenseclaw/.env, not in config.yaml.
+    """
     aid.endpoint = click.prompt(
         "  Cisco AI Defense endpoint URL",
         default=aid.endpoint,
     )
-    aid.api_key = _prompt_secret("CISCO_AI_DEFENSE_API_KEY", aid.api_key)
+    _prompt_and_save_secret("CISCO_AI_DEFENSE_API_KEY", aid.api_key, data_dir)
+    aid.api_key = ""
+    aid.api_key_env = "CISCO_AI_DEFENSE_API_KEY"
 
 
-def _prompt_secret(env_name: str, current: str) -> str:
+def _prompt_and_save_secret(env_name: str, current: str, data_dir: str) -> None:
+    """Prompt for a secret, save it to ~/.defenseclaw/.env, and set it in os.environ.
+
+    The value is never returned — callers should store only the *env var name*
+    in config.yaml (via the corresponding ``*_env`` field).
+    """
+    dotenv_path = os.path.join(data_dir, ".env")
+    dotenv_val = _load_dotenv(dotenv_path).get(env_name, "")
     env_val = os.environ.get(env_name, "")
-    if current:
-        hint = _mask(current)
-    elif env_val:
-        hint = f"from env: {_mask(env_val)}"
+    effective = current or env_val or dotenv_val
+    if effective:
+        hint = _mask(effective)
     else:
         hint = "(not set)"
     val = click.prompt(f"  {env_name} [{hint}]", default="", show_default=False)
-    if val:
-        return val
-    return current or env_val
+    secret = val or effective
+    if secret:
+        _save_secret_to_dotenv(env_name, secret, data_dir)
 
 
 def _mask(key: str) -> str:
@@ -239,13 +268,14 @@ def _print_summary(sc, llm, aid) -> None:
             rows.append(("scanners.skill_scanner", "llm_consensus_runs", str(sc.llm_consensus_runs)))
         api_key = llm.resolved_api_key()
         if api_key:
-            rows.append(("inspect_llm", "api_key", _mask(api_key)))
+            rows.append(("inspect_llm", "api_key_env", llm.api_key_env or "(in .env)"))
     if sc.use_trigger:
         rows.append(("scanners.skill_scanner", "use_trigger", "true"))
     if sc.use_virustotal:
         rows.append(("scanners.skill_scanner", "use_virustotal", "true"))
-        if sc.virustotal_api_key:
-            rows.append(("scanners.skill_scanner", "virustotal_api_key", _mask(sc.virustotal_api_key)))
+        vt_key = sc.resolved_virustotal_api_key()
+        if vt_key:
+            rows.append(("scanners.skill_scanner", "virustotal_api_key_env", sc.virustotal_api_key_env or "(in .env)"))
     if sc.use_aidefense:
         rows.append(("scanners.skill_scanner", "use_aidefense", "true"))
         rows.append(("cisco_ai_defense", "endpoint", aid.endpoint))
@@ -339,14 +369,14 @@ def _interactive_mcp_setup(mc, cfg) -> None:
 
     use_llm = click.confirm("  Enable LLM analyzer?", default=bool(llm.model))
     if use_llm:
-        _configure_inspect_llm(llm)
+        _configure_inspect_llm(llm, cfg.data_dir)
         if "llm" not in mc.analyzers:
             mc.analyzers = f"{mc.analyzers},llm" if mc.analyzers else "llm"
 
     click.echo()
     use_api = click.confirm("  Enable API analyzer (Cisco AI Defense)?", default=False)
     if use_api:
-        _configure_cisco_ai_defense(aid)
+        _configure_cisco_ai_defense(aid, cfg.data_dir)
         if "api" not in mc.analyzers:
             mc.analyzers = f"{mc.analyzers},api" if mc.analyzers else "api"
 
@@ -412,11 +442,14 @@ def setup_gateway(
 ) -> None:
     """Configure gateway connection for the DefenseClaw sidecar.
 
-    By default configures for a local OpenClaw instance (no token needed).
+    By default configures for a local OpenClaw instance (auth token from
+    ~/.defenseclaw/.env when OpenClaw requires it).
     Use --remote to configure for a remote gateway that requires an auth token,
     optionally fetched from AWS SSM Parameter Store.
     """
     gw = app.cfg.gateway
+
+    data_dir = app.cfg.data_dir
 
     if non_interactive:
         if host is not None:
@@ -426,22 +459,28 @@ def setup_gateway(
         if api_port is not None:
             gw.api_port = api_port
         if token is not None:
-            gw.token = token
+            _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", token, data_dir)
+            gw.token = ""
+            gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
         elif ssm_param:
             fetched = _fetch_ssm_token(ssm_param, ssm_region or "us-east-1", ssm_profile)
             if fetched:
-                gw.token = fetched
+                _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", fetched, data_dir)
+                gw.token = ""
+                gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
             else:
                 click.echo("error: failed to fetch token from SSM", err=True)
                 raise SystemExit(1)
-        elif not gw.token:
+        elif not gw.resolved_token():
             detected = _detect_openclaw_gateway_token(app.cfg.claw.config_file)
             if detected:
-                gw.token = detected
+                _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", detected, data_dir)
+                gw.token = ""
+                gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
     elif remote:
-        _interactive_gateway_remote(gw)
+        _interactive_gateway_remote(gw, data_dir)
     else:
-        _interactive_gateway_local(gw)
+        _interactive_gateway_local(gw, app.cfg.claw.config_file, data_dir)
 
     app.cfg.save()
     _print_gateway_summary(gw)
@@ -458,11 +497,11 @@ def setup_gateway(
             click.echo()
 
     if app.logger:
-        mode = "remote" if (remote or gw.token) else "local"
+        mode = "remote" if (remote or gw.resolved_token()) else "local"
         app.logger.log_action("setup-gateway", "config", f"mode={mode} host={gw.host} port={gw.port}")
 
 
-def _interactive_gateway_local(gw) -> None:
+def _interactive_gateway_local(gw, openclaw_config_file: str, data_dir: str) -> None:
     click.echo()
     click.echo("  Gateway Configuration (local)")
     click.echo("  ─────────────────────────────")
@@ -472,11 +511,17 @@ def _interactive_gateway_local(gw) -> None:
     gw.port = click.prompt("  Gateway port", default=gw.port, type=int)
     gw.api_port = click.prompt("  Sidecar API port", default=gw.api_port, type=int)
     gw.token = ""
+    detected = _detect_openclaw_gateway_token(openclaw_config_file)
+    if detected:
+        _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", detected, data_dir)
+        click.echo(f"  OpenClaw token saved to ~/.defenseclaw/.env ({_mask(detected)})")
+    gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
     click.echo()
-    click.echo("  Local mode: no auth token needed.")
+    click.echo("  Auth: token is read from OPENCLAW_GATEWAY_TOKEN in ~/.defenseclaw/.env when set.")
+    click.echo("  OpenClaw may require this even for 127.0.0.1.")
 
 
-def _interactive_gateway_remote(gw) -> None:
+def _interactive_gateway_remote(gw, data_dir: str) -> None:
     click.echo()
     click.echo("  Gateway Configuration (remote)")
     click.echo("  ──────────────────────────────")
@@ -489,6 +534,7 @@ def _interactive_gateway_remote(gw) -> None:
     click.echo()
     use_ssm = click.confirm("  Fetch token from AWS SSM Parameter Store?", default=True)
 
+    token_value: str = ""
     if use_ssm:
         param = click.prompt(
             "  SSM parameter name",
@@ -500,16 +546,25 @@ def _interactive_gateway_remote(gw) -> None:
         click.echo("  Fetching token from SSM...", nl=False)
         fetched = _fetch_ssm_token(param, region, profile)
         if fetched:
-            gw.token = fetched
+            token_value = fetched
             click.echo(f" ok ({_mask(fetched)})")
         else:
             click.echo(" failed")
             click.echo("  Falling back to manual entry.")
-            gw.token = _prompt_secret("OPENCLAW_GATEWAY_TOKEN", gw.token)
+            _prompt_and_save_secret("OPENCLAW_GATEWAY_TOKEN", gw.token, data_dir)
+            gw.token = ""
+            gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
+            return
     else:
-        gw.token = _prompt_secret("OPENCLAW_GATEWAY_TOKEN", gw.token)
+        _prompt_and_save_secret("OPENCLAW_GATEWAY_TOKEN", gw.token, data_dir)
 
-    if not gw.token:
+    if token_value:
+        _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", token_value, data_dir)
+
+    gw.token = ""
+    gw.token_env = "OPENCLAW_GATEWAY_TOKEN"
+
+    if not gw.resolved_token():
         click.echo("  warning: no token set — sidecar will fail to connect to a remote gateway", err=True)
 
 
@@ -557,8 +612,8 @@ def _fetch_ssm_token(param: str, region: str, profile: str | None) -> str | None
 @click.option("--disable", is_flag=True, help="Disable guardrail and revert OpenClaw config")
 @click.option("--mode", "guard_mode", type=click.Choice(["observe", "action"]), default=None,
               help="Guardrail mode")
-@click.option("--scanner-mode", type=click.Choice(["local", "remote", "both"]), default=None,
-              help="Scanner mode (local patterns, remote Cisco API, or both)")
+@click.option("--scanner-mode", type=click.Choice(["local", "remote"]), default=None,
+              help="Scanner mode (local patterns or remote Cisco API)")
 @click.option("--cisco-endpoint", default=None, help="Cisco AI Defense API endpoint")
 @click.option("--cisco-api-key-env", default=None, help="Env var name holding Cisco AI Defense API key")
 @click.option("--cisco-timeout-ms", type=int, default=None, help="Cisco AI Defense timeout (ms)")
@@ -904,10 +959,12 @@ def _interactive_guardrail_setup(app: AppContext, gc) -> None:
     click.echo("  Scanner modes:")
     click.echo("    local  — pattern matching only, no network calls (fastest)")
     click.echo("    remote — Cisco AI Defense cloud API only")
-    click.echo("    both   — local first, then Cisco if clean (recommended)")
+    sm_default = gc.scanner_mode or "local"
+    if sm_default == "both":
+        sm_default = "local"
     gc.scanner_mode = click.prompt(
-        "  Scanner mode", type=click.Choice(["local", "remote", "both"]),
-        default=gc.scanner_mode or "local",
+        "  Scanner mode", type=click.Choice(["local", "remote"]),
+        default=sm_default,
     )
 
     if gc.scanner_mode in ("remote", "both"):
@@ -1337,18 +1394,19 @@ def _print_gateway_summary(gw) -> None:
     click.echo("  Saved to ~/.defenseclaw/config.yaml")
     click.echo()
 
+    resolved = gw.resolved_token()
     rows = [
         ("host", gw.host),
         ("port", str(gw.port)),
         ("api_port", str(gw.api_port)),
-        ("token", _mask(gw.token) if gw.token else "(none — local mode)"),
+        ("token", f"via {gw.token_env} (in .env)" if resolved else "(none — local mode)"),
     ]
 
     for key, val in rows:
         click.echo(f"    gateway.{key + ':':<12s} {val}")
     click.echo()
 
-    if gw.token:
+    if resolved:
         click.echo("  Start the sidecar with:")
         click.echo("    defenseclaw-gateway")
     else:
@@ -1676,8 +1734,9 @@ def _apply_logs_config(
 
     hec_token = (contract or {}).get("hec_token", "")
     if hec_token:
-        sc.hec_token = hec_token
         _save_secret_to_dotenv("DEFENSECLAW_SPLUNK_HEC_TOKEN", hec_token, app.cfg.data_dir)
+        sc.hec_token = ""
+        sc.hec_token_env = "DEFENSECLAW_SPLUNK_HEC_TOKEN"
 
 
 # ---------------------------------------------------------------------------
@@ -1839,13 +1898,19 @@ def _stop_bridge(data_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _save_secret_to_dotenv(key: str, value: str, data_dir: str) -> None:
-    """Write a secret to ~/.defenseclaw/.env (mode 0600)."""
+    """Write a secret to ~/.defenseclaw/.env (mode 0600).
+
+    Also sets os.environ so that resolver methods (e.g.
+    ``resolved_token()``, ``resolved_api_key()``) return the correct
+    value within the same process without requiring a restart.
+    """
     if not value:
         return
     dotenv_path = os.path.join(data_dir, ".env")
     existing = _load_dotenv(dotenv_path)
     existing[key] = value
     _write_dotenv(dotenv_path, existing)
+    os.environ[key] = value
 
 
 # ---------------------------------------------------------------------------

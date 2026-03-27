@@ -7,6 +7,7 @@ so that the Go orchestrator and Python CLI share the same config file.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 DATA_DIR_NAME = ".defenseclaw"
 AUDIT_DB_NAME = "audit.db"
@@ -106,7 +109,7 @@ class CiscoAIDefenseConfig:
     """Shared Cisco AI Defense configuration used by scanners and guardrail."""
     endpoint: str = "https://us.api.inspect.aidefense.security.cisco.com"
     api_key: str = ""
-    api_key_env: str = "CISCO_AI_DEFENSE_API_KEY"
+    api_key_env: str = ""
     timeout_ms: int = 3000
     enabled_rules: list[str] = field(default_factory=list)
 
@@ -133,6 +136,15 @@ class SkillScannerConfig:
     policy: str = "permissive"
     lenient: bool = True
     virustotal_api_key: str = ""
+    virustotal_api_key_env: str = ""
+
+    def resolved_virustotal_api_key(self) -> str:
+        """Return VirusTotal key from env var (if set) or direct value."""
+        if self.virustotal_api_key_env:
+            val = os.environ.get(self.virustotal_api_key_env, "")
+            if val:
+                return val
+        return self.virustotal_api_key
 
 
 @dataclass
@@ -167,6 +179,7 @@ class WatchConfig:
 class SplunkConfig:
     hec_endpoint: str = "https://localhost:8088/services/collector/event"
     hec_token: str = ""
+    hec_token_env: str = ""
     index: str = "defenseclaw"
     source: str = "defenseclaw"
     sourcetype: str = "_json"
@@ -174,6 +187,14 @@ class SplunkConfig:
     enabled: bool = False
     batch_size: int = 50
     flush_interval_s: int = 5
+
+    def resolved_hec_token(self) -> str:
+        """Return HEC token from env var (if set) or direct value."""
+        if self.hec_token_env:
+            val = os.environ.get(self.hec_token_env, "")
+            if val:
+                return val
+        return self.hec_token
 
 
 @dataclass
@@ -262,6 +283,7 @@ class GatewayConfig:
     host: str = "127.0.0.1"
     port: int = 18789
     token: str = ""
+    token_env: str = ""
     device_key_file: str = ""
     auto_approve_safe: bool = False
     reconnect_ms: int = 800
@@ -269,6 +291,18 @@ class GatewayConfig:
     approval_timeout_s: int = 30
     api_port: int = 18970
     watcher: GatewayWatcherConfig = field(default_factory=GatewayWatcherConfig)
+
+    def resolved_token(self) -> str:
+        """Return gateway token from env var (if set) or direct value."""
+        if self.token_env:
+            val = os.environ.get(self.token_env, "")
+            if val:
+                return val
+        else:
+            val = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+            if val:
+                return val
+        return self.token
 
 
 @dataclass
@@ -550,7 +584,11 @@ def _dedup(paths: list[str]) -> list[str]:
 def _config_to_dict(cfg: Config) -> dict[str, Any]:
     """Serialize Config to a dict suitable for YAML."""
     from dataclasses import asdict
-    return asdict(cfg)
+    d = asdict(cfg)
+    gw = d.get("gateway")
+    if gw and not gw.get("token"):
+        gw.pop("token", None)
+    return d
 
 
 def _merge_severity_action(raw: dict[str, Any] | None) -> SeverityAction:
@@ -622,7 +660,7 @@ def _merge_cisco_ai_defense(raw: dict[str, Any] | None) -> CiscoAIDefenseConfig:
     return CiscoAIDefenseConfig(
         endpoint=raw.get("endpoint", "https://us.api.inspect.aidefense.security.cisco.com"),
         api_key=raw.get("api_key", ""),
-        api_key_env=raw.get("api_key_env", "CISCO_AI_DEFENSE_API_KEY"),
+        api_key_env=raw.get("api_key_env", ""),
         timeout_ms=raw.get("timeout_ms", 3000),
         enabled_rules=raw.get("enabled_rules", []),
     )
@@ -737,9 +775,52 @@ def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
     )
 
 
+def _load_dotenv_into_os(data_dir: str) -> None:
+    """Load KEY=VALUE pairs from ~/.defenseclaw/.env into os.environ.
+
+    Existing environment variables are never overwritten.  This ensures
+    secrets stored by ``defenseclaw setup`` are available to the Python CLI
+    even when not exported in the user's shell profile.
+    """
+    env_path = os.path.join(data_dir, ".env")
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except FileNotFoundError:
+        pass
+
+
+def _warn_plaintext_secrets(cfg: Config) -> None:
+    """Emit deprecation warnings for plain-text secrets in config.yaml."""
+    def _warn(section: str, field: str, env_default: str) -> None:
+        _log.warning(
+            "%s.%s contains a plain-text secret in config.yaml — "
+            "migrate it to ~/.defenseclaw/.env as %s and set %s.%s_env=%s instead",
+            section, field, env_default, section, field, env_default,
+        )
+    if cfg.inspect_llm.api_key:
+        _warn("inspect_llm", "api_key", "LLM_API_KEY")
+    if cfg.cisco_ai_defense.api_key:
+        _warn("cisco_ai_defense", "api_key", "CISCO_AI_DEFENSE_API_KEY")
+    if cfg.scanners.skill_scanner.virustotal_api_key:
+        _warn("scanners.skill_scanner", "virustotal_api_key", "VIRUSTOTAL_API_KEY")
+    if cfg.splunk.hec_token:
+        _warn("splunk", "hec_token", "DEFENSECLAW_SPLUNK_HEC_TOKEN")
+
+
 def load() -> Config:
     """Load config from ~/.defenseclaw/config.yaml, applying defaults."""
     data_dir = str(default_data_path())
+    _load_dotenv_into_os(data_dir)
     cfg_file = os.path.join(data_dir, CONFIG_FILE_NAME)
 
     raw: dict[str, Any] = {}
@@ -754,7 +835,7 @@ def load() -> Config:
     gw_raw = raw.get("gateway", {})
     splunk_raw = raw.get("splunk", {})
 
-    return Config(
+    cfg = Config(
         data_dir=raw.get("data_dir", data_dir),
         audit_db=raw.get("audit_db", os.path.join(data_dir, AUDIT_DB_NAME)),
         quarantine_dir=raw.get("quarantine_dir", os.path.join(data_dir, "quarantine")),
@@ -781,6 +862,7 @@ def load() -> Config:
                 policy=ss_raw.get("policy", "permissive"),
                 lenient=ss_raw.get("lenient", True),
                 virustotal_api_key=ss_raw.get("virustotal_api_key", ""),
+                virustotal_api_key_env=ss_raw.get("virustotal_api_key_env", ""),
             ),
             mcp_scanner=_merge_mcp_scanner(scanners_raw.get("mcp_scanner")),
             codeguard=scanners_raw.get("codeguard", os.path.join(data_dir, "codeguard-rules")),
@@ -802,6 +884,7 @@ def load() -> Config:
         splunk=SplunkConfig(
             hec_endpoint=splunk_raw.get("hec_endpoint", "https://localhost:8088/services/collector/event"),
             hec_token=splunk_raw.get("hec_token", ""),
+            hec_token_env=splunk_raw.get("hec_token_env", ""),
             index=splunk_raw.get("index", "defenseclaw"),
             source=splunk_raw.get("source", "defenseclaw"),
             sourcetype=splunk_raw.get("sourcetype", "_json"),
@@ -815,6 +898,7 @@ def load() -> Config:
             host=gw_raw.get("host", "127.0.0.1"),
             port=gw_raw.get("port", 18789),
             token=gw_raw.get("token", ""),
+            token_env=gw_raw.get("token_env", ""),
             device_key_file=gw_raw.get("device_key_file", os.path.join(data_dir, "device.key")),
             auto_approve_safe=gw_raw.get("auto_approve_safe", False),
             reconnect_ms=gw_raw.get("reconnect_ms", 800),
@@ -827,6 +911,8 @@ def load() -> Config:
         mcp_actions=_merge_mcp_actions(raw.get("mcp_actions")),
         plugin_actions=_merge_plugin_actions(raw.get("plugin_actions")),
     )
+    _warn_plaintext_secrets(cfg)
+    return cfg
 
 
 def default_config() -> Config:

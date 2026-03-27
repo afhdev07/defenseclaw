@@ -106,7 +106,7 @@ class SkillScannerWrapper:
         mappings = [
             ("SKILL_SCANNER_LLM_API_KEY", llm.resolved_api_key()),
             ("SKILL_SCANNER_LLM_MODEL", llm.model),
-            ("VIRUSTOTAL_API_KEY", cfg.virustotal_api_key),
+            ("VIRUSTOTAL_API_KEY", cfg.resolved_virustotal_api_key()),
             ("AI_DEFENSE_API_KEY", aid.resolved_api_key()),
         ]
         for env_var, value in mappings:

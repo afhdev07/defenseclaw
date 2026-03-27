@@ -60,7 +60,11 @@ func (r *EventRouter) Route(evt EventFrame) {
 	case "tool_result":
 		r.handleToolResult(evt)
 	case "exec.approval.requested":
-		r.handleApprovalRequest(evt)
+		// Must not block readLoop: handleApprovalRequest calls ResolveApproval →
+		// Client.request, which needs readLoop to deliver the RPC response. If the
+		// gateway emits this event before the connect handshake res, synchronous
+		// handling deadlocks (sidecar stuck at "waiting for connect response").
+		go r.handleApprovalRequest(evt)
 	case "session.tool":
 		r.handleSessionTool(evt)
 	case "agent":
@@ -377,8 +381,10 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 	}
 
 	cmdName := baseCommand(rawCmd)
+	fmt.Fprintf(os.Stderr, "[sidecar] exec.approval.requested: id=%s command=%s argc=%d cwd=%s\n",
+		payload.ID, cmdName, len(argv), cwd)
 	_ = r.logger.LogAction("gateway-approval-requested", payload.ID,
-		fmt.Sprintf("command_name=%s argc=%d", cmdName, len(argv)))
+		fmt.Sprintf("command_name=%s argc=%d cwd=%s", cmdName, len(argv), cwd))
 
 	var approvalSpan trace.Span
 	if r.otel != nil {
@@ -445,6 +451,10 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 		}
 		return
 	}
+
+	fmt.Fprintf(os.Stderr, "[sidecar] PENDING exec approval: %s (awaiting manual approval)\n", cmdName)
+	_ = r.logger.LogAction("gateway-approval-pending", payload.ID,
+		fmt.Sprintf("command_name=%s reason=awaiting-manual-approval", cmdName))
 
 	if r.otel != nil {
 		r.otel.EndApprovalSpan(approvalSpan, "pending", "awaiting manual approval", false, false)

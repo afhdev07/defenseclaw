@@ -87,16 +87,44 @@ def search(app: AppContext, query: str, as_json: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def _run_openclaw(*args: str) -> str | None:
-    """Run an openclaw CLI command and return stdout, or None on failure."""
+    """Run an openclaw CLI command and return the JSON body, or None on failure.
+
+    OpenClaw may write JSON to stdout or stderr (and stderr may contain
+    Node.js warnings around the JSON).  We try both streams, falling back
+    to substring extraction when the whole stream isn't valid JSON.
+    """
     try:
         result = subprocess.run(
             ["openclaw", *args],
             capture_output=True, text=True, timeout=30,
         )
-        if result.returncode == 0:
-            return result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for stream in (result.stdout, result.stderr):
+        text = (stream or "").strip()
+        if not text:
+            continue
+        # Fast path: entire stream is valid JSON
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+        # Slow path: find the first { or [ and try from there
+        for ch in ("{", "["):
+            idx = text.find(ch)
+            if idx < 0:
+                continue
+            candidate = text[idx:]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
     return None
 
 

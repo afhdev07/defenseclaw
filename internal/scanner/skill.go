@@ -81,7 +81,7 @@ func (s *SkillScanner) scanEnv() []string {
 	}{
 		{"SKILL_SCANNER_LLM_API_KEY", s.InspectLLM.ResolvedAPIKey()},
 		{"SKILL_SCANNER_LLM_MODEL", s.InspectLLM.Model},
-		{"VIRUSTOTAL_API_KEY", s.Config.VirusTotalKey},
+		{"VIRUSTOTAL_API_KEY", s.Config.ResolvedVirusTotalKey()},
 		{"AI_DEFENSE_API_KEY", s.CiscoAIDefense.ResolvedAPIKey()},
 	}
 

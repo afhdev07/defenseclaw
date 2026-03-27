@@ -29,15 +29,24 @@ type Client struct {
 	conn       *websocket.Conn
 	mu         sync.Mutex
 	closed     bool
+	seqMu      sync.Mutex
 	lastSeq    int
 	pending    map[string]chan *ResponseFrame
 	hello      *HelloOK
 	disconnCh  chan struct{}
 	disconnOnce sync.Once
 
+	// While the connect RPC is in flight, inbound events are queued here so
+	// readLoop never blocks on OnEvent (handlers may call Client.request).
+	handshakeMu           sync.Mutex
+	bufferHandshakeEvents bool
+	handshakeBuf          []EventFrame
+
 	// OnEvent is called for every non-connect event frame.
 	OnEvent func(EventFrame)
 }
+
+const connectRPCTimeout = 45 * time.Second
 
 // NewClient creates a gateway client. The device identity is loaded or created
 // automatically from the configured key file path.
@@ -105,11 +114,13 @@ func (c *Client) Connect(ctx context.Context) error {
 		nonce[:min(8, len(nonce))], nonce[max(0, len(nonce)-4):], time.Since(t0).Round(time.Millisecond))
 
 	fmt.Fprintf(os.Stderr, "[gateway] starting read loop before connect handshake\n")
+	c.startHandshakeEventBuffer()
 	go c.readLoop()
 
 	fmt.Fprintf(os.Stderr, "[gateway] sending connect (protocol=3, role=operator, device=%s) ...\n",
 		c.device.DeviceID)
 	hello, err := c.sendConnect(ctx, nonce)
+	buf := c.stopHandshakeEventBuffer()
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("gateway: connect handshake: %w", err)
@@ -117,7 +128,53 @@ func (c *Client) Connect(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "[gateway] handshake complete (%s elapsed)\n", time.Since(t0).Round(time.Millisecond))
 
 	c.hello = hello
+	for _, evt := range buf {
+		c.dispatchEvent(evt)
+	}
 	return nil
+}
+
+func (c *Client) startHandshakeEventBuffer() {
+	c.handshakeMu.Lock()
+	c.bufferHandshakeEvents = true
+	c.handshakeBuf = nil
+	c.handshakeMu.Unlock()
+}
+
+// stopHandshakeEventBuffer clears buffering and returns queued events (FIFO).
+func (c *Client) stopHandshakeEventBuffer() []EventFrame {
+	c.handshakeMu.Lock()
+	defer c.handshakeMu.Unlock()
+	c.bufferHandshakeEvents = false
+	buf := c.handshakeBuf
+	c.handshakeBuf = nil
+	return buf
+}
+
+func (c *Client) maybeBufferOrDispatchEvent(evt EventFrame) {
+	c.handshakeMu.Lock()
+	if c.bufferHandshakeEvents {
+		c.handshakeBuf = append(c.handshakeBuf, evt)
+		c.handshakeMu.Unlock()
+		return
+	}
+	c.handshakeMu.Unlock()
+	c.dispatchEvent(evt)
+}
+
+func (c *Client) dispatchEvent(evt EventFrame) {
+	if evt.Seq != nil {
+		c.seqMu.Lock()
+		seq := *evt.Seq
+		if c.lastSeq >= 0 && seq > c.lastSeq+1 {
+			fmt.Fprintf(os.Stderr, "[gateway] sequence gap: expected %d, got %d\n", c.lastSeq+1, seq)
+		}
+		c.lastSeq = seq
+		c.seqMu.Unlock()
+	}
+	if c.OnEvent != nil {
+		c.OnEvent(evt)
+	}
 }
 
 func (c *Client) waitForChallenge(ctx context.Context) (string, error) {
@@ -204,7 +261,9 @@ func (c *Client) sendConnect(ctx context.Context, nonce string) (*HelloOK, error
 	}
 
 	fmt.Fprintf(os.Stderr, "[gateway] waiting for connect response ...\n")
-	resp, err := c.request(ctx, "connect", params)
+	handshakeCtx, cancel := context.WithTimeout(ctx, connectRPCTimeout)
+	defer cancel()
+	resp, err := c.request(handshakeCtx, "connect", params)
 	if err != nil {
 		return nil, err
 	}
@@ -245,14 +304,14 @@ func (c *Client) readLoop() {
 		_, raw, err := c.conn.ReadMessage()
 		if err != nil {
 			if !c.closed {
-				fmt.Fprintf(os.Stderr, "[gateway] read error: %v\n", err)
+				readLoopLogf("[gateway] read error: %v", err)
 			}
 			return
 		}
 
 		var frame RawFrame
 		if err := json.Unmarshal(raw, &frame); err != nil {
-			fmt.Fprintf(os.Stderr, "[gateway] unparseable frame (%d bytes)\n", len(raw))
+			readLoopLogf("[gateway] unparseable frame (%d bytes)", len(raw))
 			continue
 		}
 
@@ -260,11 +319,9 @@ func (c *Client) readLoop() {
 		case "res":
 			var resp ResponseFrame
 			if err := json.Unmarshal(raw, &resp); err != nil {
-				fmt.Fprintf(os.Stderr, "[gateway] bad res frame: %v\n", err)
+				readLoopLogf("[gateway] bad res frame: %v", err)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "[gateway] ← res id=%s...%s ok=%v\n",
-				resp.ID[:min(8, len(resp.ID))], resp.ID[max(0, len(resp.ID)-4):], resp.OK)
 			c.mu.Lock()
 			ch, ok := c.pending[resp.ID]
 			if ok {
@@ -273,14 +330,16 @@ func (c *Client) readLoop() {
 			c.mu.Unlock()
 			if ok {
 				ch <- &resp
+				readLoopLogf("[gateway] ← res id=%s...%s ok=%v",
+					resp.ID[:min(8, len(resp.ID))], resp.ID[max(0, len(resp.ID)-4):], resp.OK)
 			} else {
-				fmt.Fprintf(os.Stderr, "[gateway] orphan response (no pending request): id=%s\n", resp.ID)
+				readLoopLogf("[gateway] orphan response (no pending request): id=%s", resp.ID)
 			}
 
 		case "event":
 			var evt EventFrame
 			if err := json.Unmarshal(raw, &evt); err != nil {
-				fmt.Fprintf(os.Stderr, "[gateway] bad event frame: %v\n", err)
+				readLoopLogf("[gateway] bad event frame: %v", err)
 				continue
 			}
 			seqStr := "nil"
@@ -288,25 +347,16 @@ func (c *Client) readLoop() {
 				seqStr = fmt.Sprintf("%d", *evt.Seq)
 			}
 			if c.debug {
-				fmt.Fprintf(os.Stderr, "[gateway] ← event %s seq=%s payload=%s\n",
+				readLoopLogf("[gateway] ← event %s seq=%s payload=%s",
 					evt.Event, seqStr, truncateBytes(evt.Payload, 200))
 			} else {
-				fmt.Fprintf(os.Stderr, "[gateway] ← event %s seq=%s payload_len=%d\n",
+				readLoopLogf("[gateway] ← event %s seq=%s payload_len=%d",
 					evt.Event, seqStr, len(evt.Payload))
 			}
-			if evt.Seq != nil {
-				seq := *evt.Seq
-				if c.lastSeq >= 0 && seq > c.lastSeq+1 {
-					fmt.Fprintf(os.Stderr, "[gateway] sequence gap: expected %d, got %d\n", c.lastSeq+1, seq)
-				}
-				c.lastSeq = seq
-			}
-			if c.OnEvent != nil {
-				c.OnEvent(evt)
-			}
+			c.maybeBufferOrDispatchEvent(evt)
 
 		default:
-			fmt.Fprintf(os.Stderr, "[gateway] ← unknown frame type=%s (%d bytes)\n",
+			readLoopLogf("[gateway] ← unknown frame type=%s (%d bytes)",
 				frame.Type, len(raw))
 		}
 	}

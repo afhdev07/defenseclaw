@@ -961,6 +961,19 @@ func (a *APIServer) handleGuardrailEvent(w http.ResponseWriter, r *http.Request)
 	if req.Reason != "" {
 		details += fmt.Sprintf(" reason=%s", truncate(req.Reason, 120))
 	}
+
+	switch req.Action {
+	case "block":
+		fmt.Fprintf(os.Stderr, "[guardrail] BLOCKED %s: model=%s severity=%s reason=%q findings=%v\n",
+			req.Direction, req.Model, req.Severity, req.Reason, req.Findings)
+	case "alert":
+		fmt.Fprintf(os.Stderr, "[guardrail] ALERT %s: model=%s severity=%s reason=%q findings=%v\n",
+			req.Direction, req.Model, req.Severity, req.Reason, req.Findings)
+	default:
+		fmt.Fprintf(os.Stderr, "[guardrail] OK %s: model=%s severity=%s elapsed=%.0fms\n",
+			req.Direction, req.Model, req.Severity, req.ElapsedMs)
+	}
+
 	if a.logger != nil {
 		_ = a.logger.LogAction("guardrail-verdict", req.Model, details)
 	}
@@ -1025,6 +1038,9 @@ func (a *APIServer) handleGuardrailEvaluate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "[guardrail] evaluate >>> direction=%s model=%s mode=%s scanner_mode=%s content_len=%d\n",
+		req.Direction, req.Model, req.Mode, req.ScannerMode, req.ContentLength)
+
 	input := policy.GuardrailInput{
 		Direction:     req.Direction,
 		Model:         req.Model,
@@ -1037,6 +1053,7 @@ func (a *APIServer) handleGuardrailEvaluate(w http.ResponseWriter, r *http.Reque
 
 	out, err := a.evaluateGuardrailPolicy(r.Context(), input)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[guardrail] evaluate error: %v\n", err)
 		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1046,6 +1063,10 @@ func (a *APIServer) handleGuardrailEvaluate(w http.ResponseWriter, r *http.Reque
 	if out.Reason != "" {
 		details += fmt.Sprintf(" reason=%s", truncate(out.Reason, 120))
 	}
+
+	fmt.Fprintf(os.Stderr, "[guardrail] evaluate <<< action=%s severity=%s sources=%v reason=%q\n",
+		out.Action, out.Severity, out.ScannerSources, truncate(out.Reason, 120))
+
 	if a.logger != nil {
 		_ = a.logger.LogAction("guardrail-opa-verdict", req.Model, details)
 	}

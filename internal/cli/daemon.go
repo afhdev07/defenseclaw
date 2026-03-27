@@ -23,7 +23,7 @@ var startCmd = &cobra.Command{
 The daemon process runs independently and survives terminal close.
 Use 'status' to check health and 'stop' to shut it down.
 
-Logs are written to ~/.defenseclaw/gateway.log
+Logs are written to ~/.defenseclaw/gateway.log (rotated by size; old files compressed in the same directory).
 PID is stored in ~/.defenseclaw/gateway.pid`,
 	RunE:              runStart,
 	PersistentPreRunE: nil, // Skip config loading for daemon commands

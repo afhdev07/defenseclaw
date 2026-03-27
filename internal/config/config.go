@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -107,6 +108,7 @@ type FirewallConfig struct {
 type SplunkConfig struct {
 	HECEndpoint   string `mapstructure:"hec_endpoint"    yaml:"hec_endpoint"`
 	HECToken      string `mapstructure:"hec_token"       yaml:"hec_token"`
+	HECTokenEnv   string `mapstructure:"hec_token_env"   yaml:"hec_token_env"`
 	Index         string `mapstructure:"index"            yaml:"index"`
 	Source        string `mapstructure:"source"           yaml:"source"`
 	SourceType    string `mapstructure:"sourcetype"       yaml:"sourcetype"`
@@ -114,6 +116,16 @@ type SplunkConfig struct {
 	Enabled       bool   `mapstructure:"enabled"          yaml:"enabled"`
 	BatchSize     int    `mapstructure:"batch_size"       yaml:"batch_size"`
 	FlushInterval int    `mapstructure:"flush_interval_s" yaml:"flush_interval_s"`
+}
+
+// ResolvedHECToken returns the HEC token from the env var (if set) or the direct value.
+func (c *SplunkConfig) ResolvedHECToken() string {
+	if c.HECTokenEnv != "" {
+		if v := os.Getenv(c.HECTokenEnv); v != "" {
+			return v
+		}
+	}
+	return c.HECToken
 }
 
 type WatchConfig struct {
@@ -143,17 +155,28 @@ func (c *InspectLLMConfig) ResolvedAPIKey() string {
 }
 
 type SkillScannerConfig struct {
-	Binary        string `mapstructure:"binary"             yaml:"binary"`
-	UseLLM        bool   `mapstructure:"use_llm"            yaml:"use_llm"`
-	UseBehavioral bool   `mapstructure:"use_behavioral"     yaml:"use_behavioral"`
-	EnableMeta    bool   `mapstructure:"enable_meta"        yaml:"enable_meta"`
-	UseTrigger    bool   `mapstructure:"use_trigger"        yaml:"use_trigger"`
-	UseVirusTotal bool   `mapstructure:"use_virustotal"     yaml:"use_virustotal"`
-	UseAIDefense  bool   `mapstructure:"use_aidefense"      yaml:"use_aidefense"`
-	LLMConsensus  int    `mapstructure:"llm_consensus_runs" yaml:"llm_consensus_runs"`
-	Policy        string `mapstructure:"policy"             yaml:"policy"`
-	Lenient       bool   `mapstructure:"lenient"            yaml:"lenient"`
-	VirusTotalKey string `mapstructure:"virustotal_api_key" yaml:"virustotal_api_key"`
+	Binary           string `mapstructure:"binary"                 yaml:"binary"`
+	UseLLM           bool   `mapstructure:"use_llm"                yaml:"use_llm"`
+	UseBehavioral    bool   `mapstructure:"use_behavioral"         yaml:"use_behavioral"`
+	EnableMeta       bool   `mapstructure:"enable_meta"            yaml:"enable_meta"`
+	UseTrigger       bool   `mapstructure:"use_trigger"            yaml:"use_trigger"`
+	UseVirusTotal    bool   `mapstructure:"use_virustotal"         yaml:"use_virustotal"`
+	UseAIDefense     bool   `mapstructure:"use_aidefense"          yaml:"use_aidefense"`
+	LLMConsensus     int    `mapstructure:"llm_consensus_runs"     yaml:"llm_consensus_runs"`
+	Policy           string `mapstructure:"policy"                 yaml:"policy"`
+	Lenient          bool   `mapstructure:"lenient"                yaml:"lenient"`
+	VirusTotalKey    string `mapstructure:"virustotal_api_key"     yaml:"virustotal_api_key"`
+	VirusTotalKeyEnv string `mapstructure:"virustotal_api_key_env" yaml:"virustotal_api_key_env"`
+}
+
+// ResolvedVirusTotalKey returns the VirusTotal key from the env var (if set) or the direct value.
+func (c *SkillScannerConfig) ResolvedVirusTotalKey() string {
+	if c.VirusTotalKeyEnv != "" {
+		if v := os.Getenv(c.VirusTotalKeyEnv); v != "" {
+			return v
+		}
+	}
+	return c.VirusTotalKey
 }
 
 type MCPScannerConfig struct {
@@ -229,7 +252,8 @@ type GuardrailConfig struct {
 type GatewayConfig struct {
 	Host            string               `mapstructure:"host"              yaml:"host"`
 	Port            int                  `mapstructure:"port"              yaml:"port"`
-	Token           string               `mapstructure:"token"             yaml:"token"`
+	Token           string               `mapstructure:"token"             yaml:"token,omitempty"`
+	TokenEnv        string               `mapstructure:"token_env"         yaml:"token_env"`
 	TLS             bool                 `mapstructure:"tls"               yaml:"tls"`
 	TLSSkipVerify   bool                 `mapstructure:"tls_skip_verify"   yaml:"tls_skip_verify"`
 	DeviceKeyFile   string               `mapstructure:"device_key_file"   yaml:"device_key_file"`
@@ -239,6 +263,23 @@ type GatewayConfig struct {
 	ApprovalTimeout int                  `mapstructure:"approval_timeout_s" yaml:"approval_timeout_s"`
 	APIPort         int                  `mapstructure:"api_port"           yaml:"api_port"`
 	Watcher         GatewayWatcherConfig `mapstructure:"watcher"            yaml:"watcher"`
+}
+
+// defaultOpenClawGatewayTokenEnv matches gateway.auth.token when copied to ~/.defenseclaw/.env.
+const defaultOpenClawGatewayTokenEnv = "OPENCLAW_GATEWAY_TOKEN"
+
+// ResolvedToken returns the gateway token from the env var (if set) or the direct value.
+// When token_env is empty (legacy configs), OPENCLAW_GATEWAY_TOKEN is still consulted so
+// secrets loaded from ~/.defenseclaw/.env by the sidecar are visible.
+func (g *GatewayConfig) ResolvedToken() string {
+	if g.TokenEnv != "" {
+		if v := os.Getenv(g.TokenEnv); v != "" {
+			return v
+		}
+	} else if v := os.Getenv(defaultOpenClawGatewayTokenEnv); v != "" {
+		return v
+	}
+	return g.Token
 }
 
 // RequiresTLS returns true when the gateway host is not a loopback address,
@@ -346,7 +387,30 @@ func Load() (*Config, error) {
 	if err := cfg.PluginActions.Validate(); err != nil {
 		return nil, err
 	}
+	warnPlaintextSecrets(&cfg)
 	return &cfg, nil
+}
+
+// warnPlaintextSecrets logs a deprecation warning for each secret stored as
+// plain text in config.yaml instead of via an env-var indirection.
+func warnPlaintextSecrets(cfg *Config) {
+	warn := func(section, field, envDefault string) {
+		log.Printf("WARNING: %s.%s contains a plain-text secret in config.yaml — "+
+			"migrate it to ~/.defenseclaw/.env as %s and set %s.%s_env=%s instead",
+			section, field, envDefault, section, field, envDefault)
+	}
+	if cfg.InspectLLM.APIKey != "" {
+		warn("inspect_llm", "api_key", "LLM_API_KEY")
+	}
+	if cfg.CiscoAIDefense.APIKey != "" {
+		warn("cisco_ai_defense", "api_key", "CISCO_AI_DEFENSE_API_KEY")
+	}
+	if cfg.Scanners.SkillScanner.VirusTotalKey != "" {
+		warn("scanners.skill_scanner", "virustotal_api_key", "VIRUSTOTAL_API_KEY")
+	}
+	if cfg.Splunk.HECToken != "" {
+		warn("splunk", "hec_token", "DEFENSECLAW_SPLUNK_HEC_TOKEN")
+	}
 }
 
 func (c *Config) Save() error {
@@ -396,6 +460,7 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("scanners.skill_scanner.policy", "permissive")
 	viper.SetDefault("scanners.skill_scanner.lenient", true)
 	viper.SetDefault("scanners.skill_scanner.virustotal_api_key", "")
+	viper.SetDefault("scanners.skill_scanner.virustotal_api_key_env", "VIRUSTOTAL_API_KEY")
 	viper.SetDefault("scanners.mcp_scanner.binary", "mcp-scanner")
 	viper.SetDefault("scanners.mcp_scanner.analyzers", "yara")
 	viper.SetDefault("scanners.mcp_scanner.scan_prompts", false)
@@ -412,6 +477,7 @@ func setDefaults(dataDir string) {
 
 	viper.SetDefault("splunk.hec_endpoint", "https://localhost:8088/services/collector/event")
 	viper.SetDefault("splunk.hec_token", "")
+	viper.SetDefault("splunk.hec_token_env", "DEFENSECLAW_SPLUNK_HEC_TOKEN")
 	viper.SetDefault("splunk.index", "defenseclaw")
 	viper.SetDefault("splunk.source", "defenseclaw")
 	viper.SetDefault("splunk.sourcetype", "_json")
@@ -478,7 +544,7 @@ func setDefaults(dataDir string) {
 
 	viper.SetDefault("gateway.host", "127.0.0.1")
 	viper.SetDefault("gateway.port", 18789)
-	viper.SetDefault("gateway.token", "")
+	viper.SetDefault("gateway.token_env", "OPENCLAW_GATEWAY_TOKEN")
 	viper.SetDefault("gateway.device_key_file", filepath.Join(dataDir, "device.key"))
 	viper.SetDefault("gateway.auto_approve_safe", false)
 	viper.SetDefault("gateway.reconnect_ms", 800)

@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 
 import click
 
@@ -219,6 +218,37 @@ def _show_scanner_defaults(cfg) -> None:
     click.echo("  Run 'defenseclaw setup' to customize scanner settings.")
 
 
+def _ensure_device_key(path: str) -> None:
+    """Create the Ed25519 device key file if it doesn't exist.
+
+    The Go gateway creates this on first start, but the guardrail setup
+    needs it earlier to derive the LiteLLM master key. Uses the same PEM
+    format as internal/gateway/device.go.
+    """
+    if os.path.exists(path):
+        return
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    private_key = Ed25519PrivateKey.generate()
+    seed = private_key.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+    import base64
+    b64_seed = base64.b64encode(seed).decode()
+    pem_data = (
+        "-----BEGIN ED25519 PRIVATE KEY-----\n"
+        f"{b64_seed}\n"
+        "-----END ED25519 PRIVATE KEY-----\n"
+    )
+    with open(path, "w") as f:
+        os.chmod(path, 0o600)
+        f.write(pem_data)
+
+
 def _resolve_openclaw_gateway(claw_config_file: str) -> dict[str, str | int]:
     """Read gateway host, port, and token from openclaw.json.
 
@@ -268,18 +298,32 @@ def _setup_gateway_defaults(cfg, logger, is_new_config: bool = True) -> None:
     Only applies OpenClaw values (host/port/token) when creating a new config.
     Existing configs preserve user-customized gateway settings.
     """
+    token_configured = False
     if is_new_config:
         oc_gw = _resolve_openclaw_gateway(cfg.claw.config_file)
         cfg.gateway.host = oc_gw["host"]
         cfg.gateway.port = oc_gw["port"]
         if oc_gw["token"]:
-            cfg.gateway.token = oc_gw["token"]
+            from defenseclaw.commands.cmd_setup import _save_secret_to_dotenv
+            _save_secret_to_dotenv("OPENCLAW_GATEWAY_TOKEN", oc_gw["token"], cfg.data_dir)
+            cfg.gateway.token = ""
+            cfg.gateway.token_env = "OPENCLAW_GATEWAY_TOKEN"
+            token_configured = True
+        else:
+            cfg.gateway.token = ""
+            # Keep standard env indirection so ~/.defenseclaw/.env can supply the token
+            # when OpenClaw enables gateway auth after init.
+            cfg.gateway.token_env = "OPENCLAW_GATEWAY_TOKEN"
+    else:
+        token_configured = bool(cfg.gateway.resolved_token())
 
     if not cfg.gateway.device_key_file:
         cfg.gateway.device_key_file = os.path.join(cfg.data_dir, "device.key")
 
+    _ensure_device_key(cfg.gateway.device_key_file)
+
     click.echo(f"  OpenClaw:      {cfg.gateway.host}:{cfg.gateway.port}")
-    token_status = "configured" if cfg.gateway.token else "none (local)"
+    token_status = "configured" if token_configured else "none (local)"
     click.echo(f"  Token:         {token_status}")
     click.echo(f"  API port:      {cfg.gateway.api_port}")
     click.echo(f"  Watcher:       enabled={cfg.gateway.watcher.enabled}")
@@ -358,14 +402,50 @@ def _find_guardrail_source() -> str | None:
     return None
 
 
-def _litellm_proxy_ready() -> bool:
-    """Check that litellm binary exists AND its proxy extras are importable."""
+def _resolve_litellm_python() -> str | None:
+    """Resolve the Python interpreter that the litellm binary actually uses.
+
+    When litellm is installed via ``uv tool install``, it lives in an isolated
+    virtualenv with its own Python.  We must check/install extras against
+    *that* interpreter, not ``sys.executable``.
+    """
     litellm_bin = shutil.which("litellm")
     if not litellm_bin:
+        return None
+    try:
+        real = os.path.realpath(litellm_bin)
+        with open(real) as f:
+            first = f.readline()
+            if not first.startswith("#!"):
+                return None
+            shebang = first[2:].strip().split()
+            last = shebang[-1] if shebang else ""
+            if last not in ("sh", "/bin/sh", "/usr/bin/env"):
+                return last
+            second = f.readline()
+            if "exec" in second:
+                import re
+                quoted = re.findall(r"'([^']+)'", second)
+                for p in quoted:
+                    if p.startswith("/"):
+                        return p
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+def _litellm_proxy_ready() -> bool:
+    """Check that litellm binary exists AND its proxy extras are importable.
+
+    Checks against the Python that litellm actually runs under (its tool
+    virtualenv), not the defenseclaw CLI's own ``sys.executable``.
+    """
+    python = _resolve_litellm_python()
+    if not python:
         return False
     try:
         result = subprocess.run(
-            [sys.executable, "-c", "import backoff; import prisma"],
+            [python, "-c", "import backoff; import prisma"],
             capture_output=True, text=True, timeout=10,
         )
         return result.returncode == 0
@@ -374,22 +454,42 @@ def _litellm_proxy_ready() -> bool:
 
 
 def _install_litellm_proxy_extras() -> bool:
-    """Install litellm[proxy] extras into the active Python environment."""
-    pip = shutil.which("pip") or shutil.which("pip3")
+    """Install litellm[proxy] extras into litellm's own Python environment.
+
+    When litellm is installed via ``uv tool install``, its virtualenv is
+    separate from the defenseclaw CLI environment.  We resolve litellm's
+    Python and pip-install directly into that interpreter so the proxy
+    extras are available when the Go gateway spawns litellm.
+    """
+    python = _resolve_litellm_python()
     uv = shutil.which("uv")
     try:
+        if python:
+            if uv:
+                result = subprocess.run(
+                    [uv, "pip", "install", "--python", python, "litellm[proxy]"],
+                    capture_output=True, text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [python, "-m", "pip", "install", "litellm[proxy]"],
+                    capture_output=True, text=True,
+                )
+            return result.returncode == 0
+
         if uv:
             result = subprocess.run(
                 [uv, "pip", "install", "litellm[proxy]"],
                 capture_output=True, text=True,
             )
-        elif pip:
+        else:
+            pip = shutil.which("pip") or shutil.which("pip3")
+            if not pip:
+                return False
             result = subprocess.run(
                 [pip, "install", "litellm[proxy]"],
                 capture_output=True, text=True,
             )
-        else:
-            return False
         return result.returncode == 0
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False

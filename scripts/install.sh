@@ -433,7 +433,7 @@ print_success() {
     printf "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
     printf "  Get started:\n\n"
-    printf "    ${CYAN}defenseclaw init${NC}\n"
+    printf "    ${CYAN}defenseclaw init --enable-guardrail${NC}\n"
     echo ""
 }
 

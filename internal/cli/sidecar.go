@@ -51,11 +51,9 @@ func runSidecar(_ *cobra.Command, _ []string) error {
 		cfg.Gateway.Port = sidecarPort
 	}
 
+	// Resolve token from env var if not set directly (via flag or config).
 	if cfg.Gateway.Token == "" {
-		token := os.Getenv("OPENCLAW_GATEWAY_TOKEN")
-		if token != "" {
-			cfg.Gateway.Token = token
-		}
+		cfg.Gateway.Token = cfg.Gateway.ResolvedToken()
 	}
 
 	shell := sandbox.NewWithFallback(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir, cfg.PolicyDir)

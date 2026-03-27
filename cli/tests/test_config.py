@@ -423,7 +423,7 @@ class TestCiscoAIDefenseConfig(unittest.TestCase):
         aid = CiscoAIDefenseConfig()
         self.assertEqual(aid.endpoint, "https://us.api.inspect.aidefense.security.cisco.com")
         self.assertEqual(aid.api_key, "")
-        self.assertEqual(aid.api_key_env, "CISCO_AI_DEFENSE_API_KEY")
+        self.assertEqual(aid.api_key_env, "")
         self.assertEqual(aid.timeout_ms, 3000)
         self.assertEqual(aid.enabled_rules, [])
 
@@ -477,7 +477,7 @@ class TestMergeCiscoAIDefense(unittest.TestCase):
     def test_none_returns_defaults(self):
         aid = _merge_cisco_ai_defense(None)
         self.assertIn("aidefense.security.cisco.com", aid.endpoint)
-        self.assertEqual(aid.api_key_env, "CISCO_AI_DEFENSE_API_KEY")
+        self.assertEqual(aid.api_key_env, "")
         self.assertEqual(aid.timeout_ms, 3000)
 
     def test_override(self):
@@ -642,6 +642,25 @@ class TestConfigTopLevelSections(unittest.TestCase):
         from defenseclaw.config import GuardrailConfig
         gc = GuardrailConfig()
         self.assertFalse(hasattr(gc, "cisco_ai_defense"))
+
+
+class TestGatewayResolvedToken(unittest.TestCase):
+    def test_empty_token_env_reads_openclaw_env(self):
+        gw = GatewayConfig(token_env="", token="")
+        with patch.dict(os.environ, {"OPENCLAW_GATEWAY_TOKEN": "t1"}, clear=False):
+            self.assertEqual(gw.resolved_token(), "t1")
+
+    def test_custom_token_env_takes_precedence(self):
+        gw = GatewayConfig(token_env="MY_TOK", token="inline")
+        env = {"MY_TOK": "from-env", "OPENCLAW_GATEWAY_TOKEN": "other"}
+        with patch.dict(os.environ, env, clear=False):
+            self.assertEqual(gw.resolved_token(), "from-env")
+
+    def test_custom_token_env_empty_ignores_openclaw_env(self):
+        gw = GatewayConfig(token_env="MY_TOK", token="fallback")
+        env = {"OPENCLAW_GATEWAY_TOKEN": "other"}
+        with patch.dict(os.environ, env, clear=False):
+            self.assertEqual(gw.resolved_token(), "fallback")
 
 
 if __name__ == "__main__":

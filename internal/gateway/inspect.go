@@ -235,6 +235,15 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(os.Stderr, "[inspect] <<< tool=%q action=%s severity=%s mode=%s confidence=%.2f elapsed=%s reason=%q findings=%v\n",
 		req.Tool, verdict.Action, verdict.Severity, verdict.Mode, verdict.Confidence, elapsed, verdict.Reason, verdict.Findings)
 
+	switch verdict.Action {
+	case "block":
+		fmt.Fprintf(os.Stderr, "[inspect] BLOCKED tool=%q severity=%s reason=%q\n",
+			req.Tool, verdict.Severity, verdict.Reason)
+	case "alert":
+		fmt.Fprintf(os.Stderr, "[inspect] ALERT tool=%q severity=%s reason=%q\n",
+			req.Tool, verdict.Severity, verdict.Reason)
+	}
+
 	var auditAction string
 	switch verdict.Action {
 	case "block":

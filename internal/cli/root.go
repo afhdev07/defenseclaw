@@ -132,10 +132,7 @@ func initSplunkForwarder() {
 		return
 	}
 
-	token := cfg.Splunk.HECToken
-	if token == "" {
-		token = os.Getenv("DEFENSECLAW_SPLUNK_HEC_TOKEN")
-	}
+	token := cfg.Splunk.ResolvedHECToken()
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "warning: splunk.enabled=true but no HEC token configured")
 		return

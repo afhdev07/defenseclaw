@@ -379,15 +379,26 @@ def model_to_litellm_name(model: str) -> str:
 # ------------------------------------------------------------------
 
 def _derive_master_key(device_key_file: str) -> str:
-    """Derive a deterministic master key from the device key file."""
-    path = _expand(device_key_file)
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-        digest = hashlib.sha256(data).hexdigest()[:16]
-        return f"sk-dc-{digest}"
-    except OSError:
-        return "sk-dc-local-dev"
+    """Derive a deterministic master key from the device key file.
+
+    Tries the given path first, then the default ~/.defenseclaw/device.key.
+    Only falls back to a static key if neither exists.
+    """
+    candidates = [device_key_file]
+    default_path = os.path.join(str(Path.home()), ".defenseclaw", "device.key")
+    if _expand(device_key_file) != default_path:
+        candidates.append(default_path)
+
+    for candidate in candidates:
+        path = _expand(candidate)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            digest = hashlib.sha256(data).hexdigest()[:16]
+            return f"sk-dc-{digest}"
+        except OSError:
+            continue
+    return "sk-dc-local-dev"
 
 
 def _unregister_plugin_from_config(openclaw_config: str) -> None:

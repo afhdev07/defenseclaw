@@ -512,7 +512,11 @@ class DefenseClawGuardrail(CustomGuardrail):
         _cache_verdict(id(data), verdict)
 
         if action == "block" and self.mode == "action":
-            data["mock_response"] = self._block_message("prompt", reason)
+            user_msg = self._block_message("prompt", reason)
+            data["_defenseclaw_prompt_blocked"] = True
+            # Plain string (not ModelResponse): LiteLLM streams it in small deltas
+            # then emits a final finish_reason chunk — matches OpenAI shape OpenClaw expects.
+            data["mock_response"] = user_msg
             return data
 
         return data
@@ -520,10 +524,10 @@ class DefenseClawGuardrail(CustomGuardrail):
     # ------------------------------------------------------------------
     # MODERATION: runs in parallel with LLM call
     #
-    # When pre_call already set mock_response (blocked the prompt),
-    # this hook is a secondary check.  Uses HTTPException because
-    # ModifyResponseException has a streaming bug in litellm <=1.82.x
-    # (uses wrong variable for logging_obj → AttributeError).
+    # Safety-net for blocked prompts.  Pre-call sets ``mock_response`` so the
+    # router returns a synthetic completion (HTTP 200) and never calls the LLM.
+    # Skip this hook in that case — otherwise it would race route_request and
+    # can raise HTTP 400 while the mock completion is already being returned.
     # ------------------------------------------------------------------
 
     async def async_moderation_hook(
@@ -532,7 +536,8 @@ class DefenseClawGuardrail(CustomGuardrail):
         user_api_key_dict: UserAPIKeyAuth,
         call_type: Any | None = None,
     ) -> None:
-        if data.get("mock_response"):
+        if data.get("_defenseclaw_prompt_blocked"):
+            _pop_verdict(id(data))
             return
 
         cached = _pop_verdict(id(data))
@@ -568,6 +573,9 @@ class DefenseClawGuardrail(CustomGuardrail):
         response: Any,
     ) -> None:
         import litellm
+
+        if data.get("_defenseclaw_prompt_blocked"):
+            return
 
         content = ""
         tool_calls: list[dict[str, str]] = []
@@ -638,6 +646,11 @@ class DefenseClawGuardrail(CustomGuardrail):
         Yields each chunk through unchanged but accumulates text for scanning.
         Once the stream finishes, runs a final inspection on the full response.
         """
+        if request_data and request_data.get("_defenseclaw_prompt_blocked"):
+            async for chunk in response:
+                yield chunk
+            return
+
         accumulated = ""
         model = "?"
         usage = None

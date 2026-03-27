@@ -309,6 +309,82 @@ func TestClientConnectRejected(t *testing.T) {
 	}
 }
 
+// TestConnectHandshakeApprovalEventBeforeOK verifies the sidecar does not deadlock
+// when the gateway delivers exec.approval.requested (which triggers
+// ResolveApproval) before the connect RPC response. readLoop must keep reading
+// while approval handling runs.
+func TestConnectHandshakeApprovalEventBeforeOK(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	srv := newLocalTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		cp, _ := json.Marshal(ChallengePayload{Nonce: "nonce-for-approval-order", Ts: 1700000000000})
+		challenge, _ := json.Marshal(EventFrame{Type: "event", Event: "connect.challenge", Payload: cp})
+		conn.WriteMessage(websocket.TextMessage, challenge)
+
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var connectReq RequestFrame
+		json.Unmarshal(raw, &connectReq)
+
+		apPayload, _ := json.Marshal(ApprovalRequestPayload{
+			ID: "early-approval",
+			SystemRunPlan: &SystemRunPlan{
+				RawCommand: "echo ok",
+				Argv:       []string{"echo", "ok"},
+			},
+		})
+		approvalEvt, _ := json.Marshal(EventFrame{
+			Type: "event", Event: "exec.approval.requested", Payload: apPayload,
+		})
+		conn.WriteMessage(websocket.TextMessage, approvalEvt)
+
+		helloData, _ := json.Marshal(HelloOK{
+			Type:     "hello-ok",
+			Protocol: 3,
+			Features: &HelloFeatures{
+				Methods: []string{"exec.approval.resolve"},
+				Events:  []string{"exec.approval.requested"},
+			},
+		})
+		connectOK, _ := json.Marshal(ResponseFrame{
+			Type: "res", ID: connectReq.ID, OK: true, Payload: helloData,
+		})
+		conn.WriteMessage(websocket.TextMessage, connectOK)
+
+		for {
+			_, raw2, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req2 RequestFrame
+			if json.Unmarshal(raw2, &req2) != nil {
+				continue
+			}
+			ok, _ := json.Marshal(ResponseFrame{Type: "res", ID: req2.ID, OK: true, Payload: json.RawMessage(`{}`)})
+			conn.WriteMessage(websocket.TextMessage, ok)
+		}
+	}))
+
+	client := clientForServer(t, srv)
+	store, logger := testStoreAndLogger(t)
+	router := NewEventRouter(client, store, logger, true, nil)
+	client.OnEvent = router.Route
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+}
+
 // ---------------------------------------------------------------------------
 // readLoop tests
 // ---------------------------------------------------------------------------

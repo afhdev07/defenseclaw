@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -98,6 +99,17 @@ def load_litellm_config() -> dict[str, Any]:
         return {}
 
 
+def derive_master_key() -> str:
+    """Derive master key from device.key, matching the Go sidecar and Python CLI."""
+    key_file = DC_DIR / "device.key"
+    try:
+        data = key_file.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        return f"sk-dc-{digest}"
+    except OSError:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
@@ -154,7 +166,7 @@ def http_post(
 # 1. LiteLLM Proxy Health
 # ---------------------------------------------------------------------------
 
-def test_proxy_health(proxy_base: str, r: Results) -> None:
+def test_proxy_health(proxy_base: str, auth_headers: dict[str, str], r: Results) -> None:
     header("LiteLLM Proxy Health")
 
     code, _ = http_get(f"{proxy_base}/health/liveliness", timeout=3)
@@ -163,7 +175,7 @@ def test_proxy_health(proxy_base: str, r: Results) -> None:
     else:
         r.fail(f"GET /health/liveliness → {code} (proxy unreachable or down)")
 
-    code, body = http_get(f"{proxy_base}/health", timeout=3)
+    code, body = http_get(f"{proxy_base}/health", timeout=3, headers=auth_headers)
     if code == 200:
         r.ok("GET /health → 200")
         if isinstance(body, dict):
@@ -857,7 +869,11 @@ def main() -> None:
     proxy_base = f"http://127.0.0.1:{litellm_port}"
     sidecar_base = f"http://127.0.0.1:{sidecar_port}"
 
-    master_key = ll_cfg.get("general_settings", {}).get("master_key", "")
+    master_key = (
+        os.environ.get("LITELLM_MASTER_KEY", "")
+        or ll_cfg.get("general_settings", {}).get("master_key", "")
+        or derive_master_key()
+    )
     model_list = ll_cfg.get("model_list", [])
     model_name = model_list[0]["model_name"] if model_list else ""
 
@@ -879,7 +895,7 @@ def main() -> None:
     r = Results()
 
     if not args.guardrail:
-        test_proxy_health(proxy_base, r)
+        test_proxy_health(proxy_base, auth_headers, r)
         test_model_listing(proxy_base, auth_headers, r)
         test_chat_completion(proxy_base, model_name, auth_headers, r)
         test_sidecar_health(sidecar_base, r)
