@@ -1,4 +1,4 @@
-name: splunk-claw-bridge-local
+name: defenseclaw-splunk-local
 
 services:
   splunk:
@@ -19,6 +19,6 @@ services:
 
 volumes:
   splunk_etc:
-    name: splunk_claw_bridge_etc
+    name: defenseclaw_splunk_local_etc
   splunk_var:
-    name: splunk_claw_bridge_var
+    name: defenseclaw_splunk_local_var

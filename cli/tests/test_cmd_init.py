@@ -20,6 +20,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import sys
@@ -460,6 +461,65 @@ class TestResolveOpenclawGateway(unittest.TestCase):
 
             result = _resolve_openclaw_gateway(oc_path)
             self.assertEqual(result["token"], "")
+
+
+class TestResolveSplunkBridgeBundle(unittest.TestCase):
+    def test_prefers_packaged_bundle_data(self):
+        from defenseclaw.commands.cmd_init import _resolve_splunk_bridge_bundle
+
+        def fake_is_dir(path):
+            path_str = str(path)
+            return path_str.endswith("_data/splunk_local_bridge") or path_str.endswith("bundles/splunk_local_bridge")
+
+        with patch("pathlib.Path.is_dir", autospec=True, side_effect=fake_is_dir):
+            result = _resolve_splunk_bridge_bundle()
+
+        self.assertTrue(str(result).endswith("_data/splunk_local_bridge"))
+
+
+class TestInitSeedsSplunkBridge(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-splunk-")
+        self.bundle_dir = tempfile.mkdtemp(prefix="dclaw-bundle-splunk-")
+        self.runner = CliRunner()
+
+        bin_dir = os.path.join(self.bundle_dir, "bin")
+        os.makedirs(bin_dir, exist_ok=True)
+        bridge_bin = os.path.join(bin_dir, "splunk-claw-bridge")
+        with open(bridge_bin, "w", encoding="utf-8") as handle:
+            handle.write("#!/usr/bin/env bash\n")
+        os.chmod(bridge_bin, 0o644)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        shutil.rmtree(self.bundle_dir, ignore_errors=True)
+
+    @patch("defenseclaw.commands.cmd_init._resolve_splunk_bridge_bundle")
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_seeds_bundled_splunk_runtime(
+        self,
+        mock_path,
+        _mock_env,
+        _mock_scanners,
+        _mock_guardrail,
+        _mock_which,
+        mock_bundle,
+    ):
+        mock_path.return_value = Path(self.tmp_dir)
+        mock_bundle.return_value = Path(self.bundle_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Splunk bridge: seeded in", result.output)
+        seeded_bin = os.path.join(self.tmp_dir, "splunk-bridge", "bin", "splunk-claw-bridge")
+        self.assertTrue(os.path.isfile(seeded_bin))
+        self.assertTrue(os.access(seeded_bin, os.X_OK))
 
 
 class TestInstallScanners(unittest.TestCase):

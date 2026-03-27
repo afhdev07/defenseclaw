@@ -52,11 +52,11 @@ type EventFrame struct {
 
 // HelloOK is the payload of a successful connect response.
 type HelloOK struct {
-	Type     string          `json:"type"`
-	Protocol int             `json:"protocol"`
-	Features *HelloFeatures  `json:"features,omitempty"`
-	Auth     *HelloAuth      `json:"auth,omitempty"`
-	Policy   *HelloPolicy    `json:"policy,omitempty"`
+	Type     string         `json:"type"`
+	Protocol int            `json:"protocol"`
+	Features *HelloFeatures `json:"features,omitempty"`
+	Auth     *HelloAuth     `json:"auth,omitempty"`
+	Policy   *HelloPolicy   `json:"policy,omitempty"`
 }
 
 type HelloFeatures struct {
@@ -96,8 +96,9 @@ type ToolResultPayload struct {
 
 // ApprovalRequestPayload is the payload of an exec.approval.requested event.
 type ApprovalRequestPayload struct {
-	ID            string         `json:"id"`
-	SystemRunPlan *SystemRunPlan `json:"systemRunPlan,omitempty"`
+	ID            string                 `json:"id"`
+	SystemRunPlan *SystemRunPlan         `json:"systemRunPlan,omitempty"`
+	Request       *ApprovalRequestRecord `json:"request,omitempty"`
 }
 
 type SystemRunPlan struct {
@@ -106,11 +107,59 @@ type SystemRunPlan struct {
 	RawCommand string   `json:"rawCommand,omitempty"`
 }
 
+type ApprovalRequestRecord struct {
+	Command        string         `json:"command,omitempty"`
+	CommandPreview string         `json:"commandPreview,omitempty"`
+	CommandArgv    []string       `json:"commandArgv,omitempty"`
+	Cwd            string         `json:"cwd,omitempty"`
+	SystemRunPlan  *SystemRunPlan `json:"systemRunPlan,omitempty"`
+}
+
+// CommandContext normalizes approval-request command data across the legacy
+// top-level payload shape and the newer nested request shape used by OpenClaw.
+func (p ApprovalRequestPayload) CommandContext() (rawCmd string, argv []string, cwd string) {
+	if p.SystemRunPlan != nil {
+		rawCmd = p.SystemRunPlan.RawCommand
+		argv = append(argv, p.SystemRunPlan.Argv...)
+		cwd = p.SystemRunPlan.Cwd
+	}
+
+	if p.Request == nil {
+		return rawCmd, argv, cwd
+	}
+
+	if p.Request.SystemRunPlan != nil {
+		if rawCmd == "" {
+			rawCmd = p.Request.SystemRunPlan.RawCommand
+		}
+		if len(argv) == 0 {
+			argv = append(argv, p.Request.SystemRunPlan.Argv...)
+		}
+		if cwd == "" {
+			cwd = p.Request.SystemRunPlan.Cwd
+		}
+	}
+
+	if rawCmd == "" {
+		rawCmd = p.Request.Command
+	}
+	if rawCmd == "" {
+		rawCmd = p.Request.CommandPreview
+	}
+	if len(argv) == 0 {
+		argv = append(argv, p.Request.CommandArgv...)
+	}
+	if cwd == "" {
+		cwd = p.Request.Cwd
+	}
+
+	return rawCmd, argv, cwd
+}
+
 // ApprovalResolveParams is the params for exec.approval.resolve RPC.
 type ApprovalResolveParams struct {
 	ID       string `json:"id"`
-	Approved bool   `json:"approved"`
-	Reason   string `json:"reason,omitempty"`
+	Decision string `json:"decision"`
 }
 
 // SkillsUpdateParams is the params for skills.update RPC.
@@ -140,8 +189,8 @@ type ConfigPatchRawParams struct {
 // configGetResponse extracts the hash and config from a config.get response.
 // OpenClaw nests the actual config under a "config" key in the payload.
 type configGetResponse struct {
-	Hash   string            `json:"hash"`
-	Config *configGetInner   `json:"config,omitempty"`
+	Hash   string          `json:"hash"`
+	Config *configGetInner `json:"config,omitempty"`
 }
 
 type configGetInner struct {

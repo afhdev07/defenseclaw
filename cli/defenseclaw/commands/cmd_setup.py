@@ -1437,6 +1437,7 @@ def _print_gateway_summary(gw) -> None:
 # ---------------------------------------------------------------------------
 
 _SPLUNK_O11Y_INGEST_TEMPLATE = "ingest.{realm}.observability.splunkcloud.com"
+_SPLUNK_GENERAL_TERMS_URL = "https://www.splunk.com/en_us/legal/splunk-general-terms.html"
 
 _SPLUNK_LOCAL_HEC_DEFAULTS = {
     "hec_endpoint": "http://127.0.0.1:8088/services/collector/event",
@@ -1455,6 +1456,8 @@ _SPLUNK_LOCAL_HEC_DEFAULTS = {
 @click.option("--access-token", default=None, help="Splunk O11y access token")
 @click.option("--app-name", default=None, help="OTEL service name (default: defenseclaw)")
 @click.option("--disable", is_flag=True, help="Disable Splunk integration(s)")
+@click.option("--accept-splunk-license", is_flag=True,
+              help="Acknowledge the Splunk General Terms for local Splunk enablement")
 @click.option("--non-interactive", is_flag=True, help="Use flags instead of prompts")
 @pass_ctx
 def setup_splunk(
@@ -1465,6 +1468,7 @@ def setup_splunk(
     access_token: str | None,
     app_name: str | None,
     disable: bool,
+    accept_splunk_license: bool,
     non_interactive: bool,
 ) -> None:
     """Configure Splunk integration for DefenseClaw.
@@ -1492,24 +1496,35 @@ def setup_splunk(
         click.echo("  error: specify --o11y, --logs, or both with --non-interactive", err=True)
         raise SystemExit(1)
 
+    did_o11y = False
+    did_logs = False
+
     if enable_o11y:
         _setup_o11y(app, realm or "us1", access_token, app_name or "defenseclaw",
                     non_interactive=non_interactive)
+        did_o11y = True
 
     if enable_logs:
-        _setup_logs(app, non_interactive=non_interactive)
+        did_logs = _setup_logs(
+            app,
+            non_interactive=non_interactive,
+            accept_splunk_license=accept_splunk_license,
+        )
+
+    if not did_o11y and not did_logs:
+        return
 
     app.cfg.save()
     click.echo("  Config saved to ~/.defenseclaw/config.yaml")
     click.echo()
     _print_splunk_status(app)
-    _print_splunk_next_steps(enable_o11y, enable_logs)
+    _print_splunk_next_steps(did_o11y, did_logs)
 
     if app.logger:
         parts: list[str] = []
-        if enable_o11y:
+        if did_o11y:
             parts.append("o11y=enabled")
-        if enable_logs:
+        if did_logs:
             parts.append("logs=enabled")
         app.logger.log_action("setup-splunk", "config", " ".join(parts))
 
@@ -1549,8 +1564,7 @@ def _interactive_splunk_setup(
         click.echo()
 
     if click.confirm("  Enable local Splunk Enterprise (Docker, HEC logs)?", default=False):
-        _interactive_logs(app)
-        did_logs = True
+        did_logs = _interactive_logs(app)
 
     if not did_o11y and not did_logs:
         click.echo()
@@ -1617,15 +1631,19 @@ def _prompt_splunk_token(current: str | None) -> str:
     return current or env_val
 
 
-def _interactive_logs(app: AppContext) -> None:
+def _interactive_logs(app: AppContext) -> bool:
     click.echo()
     click.echo("  Local Splunk Enterprise")
     click.echo("  ───────────────────────")
     click.echo()
 
+    if not _accept_splunk_license_interactive():
+        click.echo("  Local Splunk enablement cancelled.")
+        return False
+
     ok = _preflight_docker()
     if not ok:
-        return
+        return False
 
     index = click.prompt("  Index name", default="defenseclaw_local")
     source = click.prompt("  Source", default="defenseclaw")
@@ -1633,6 +1651,7 @@ def _interactive_logs(app: AppContext) -> None:
 
     _apply_logs_config(app, index=index, source=source, sourcetype=sourcetype,
                        bootstrap_bridge=True)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1666,13 +1685,24 @@ def _setup_o11y(
     click.echo(f"  Splunk O11y configured (realm={realm})")
 
 
-def _setup_logs(app: AppContext, *, non_interactive: bool) -> None:
+def _setup_logs(
+    app: AppContext,
+    *,
+    non_interactive: bool,
+    accept_splunk_license: bool,
+) -> bool:
+    if not _ensure_splunk_license_acceptance(
+        accept_splunk_license=accept_splunk_license,
+        non_interactive=non_interactive,
+    ):
+        return False
+
     ok = _preflight_docker()
     if not ok:
         if non_interactive:
             click.echo("  error: Docker is required for --logs", err=True)
             raise SystemExit(1)
-        return
+        return False
 
     _apply_logs_config(
         app,
@@ -1682,6 +1712,42 @@ def _setup_logs(app: AppContext, *, non_interactive: bool) -> None:
         bootstrap_bridge=True,
     )
     click.echo("  Local Splunk Enterprise configured")
+    return True
+
+
+def _print_splunk_license_notice() -> None:
+    click.echo("  Local Splunk enablement requires acceptance of the Splunk General Terms:")
+    click.echo(f"    {_SPLUNK_GENERAL_TERMS_URL}")
+    click.echo("  If you do not agree, do not download, start, access, or use the software.")
+    click.echo()
+
+
+def _accept_splunk_license_interactive() -> bool:
+    _print_splunk_license_notice()
+    return click.confirm(
+        "  Do you accept the Splunk General Terms for this local Splunk workflow?",
+        default=False,
+    )
+
+
+def _ensure_splunk_license_acceptance(
+    *,
+    accept_splunk_license: bool,
+    non_interactive: bool,
+) -> bool:
+    if accept_splunk_license:
+        return True
+
+    if non_interactive:
+        click.echo("  error: --accept-splunk-license is required with --logs --non-interactive", err=True)
+        click.echo(f"         Review the Splunk General Terms: {_SPLUNK_GENERAL_TERMS_URL}", err=True)
+        raise SystemExit(1)
+
+    if not _accept_splunk_license_interactive():
+        click.echo("  Local Splunk enablement cancelled.")
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1737,6 +1803,8 @@ def _apply_logs_config(
     contract: dict[str, str] | None = None
     if bootstrap_bridge:
         contract = _bootstrap_bridge(app.cfg.data_dir)
+        if not contract:
+            raise SystemExit(1)
 
     sc = app.cfg.splunk
     sc.enabled = True

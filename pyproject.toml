@@ -45,6 +45,17 @@ defenseclaw = [
     "_data/skills/codeguard/*.md",
     "_data/skills/codeguard/*.yaml",
     "_data/skills/codeguard/*.py",
+    "_data/splunk_local_bridge/bin/*",
+    "_data/splunk_local_bridge/compose/*",
+    "_data/splunk_local_bridge/env/.env.example",
+    "_data/splunk_local_bridge/splunk/*",
+    "_data/splunk_local_bridge/splunk/ansible/*",
+    "_data/splunk_local_bridge/splunk/bin/*",
+    "_data/splunk_local_bridge/splunk/apps/defenseclaw_local_mode/bin/*",
+    "_data/splunk_local_bridge/splunk/apps/defenseclaw_local_mode/default/*",
+    "_data/splunk_local_bridge/splunk/apps/defenseclaw_local_mode/default/data/ui/nav/*",
+    "_data/splunk_local_bridge/splunk/apps/defenseclaw_local_mode/default/data/ui/views/*",
+    "_data/splunk_local_bridge/splunk/apps/defenseclaw_local_mode/metadata/*",
 ]
 
 [tool.uv]

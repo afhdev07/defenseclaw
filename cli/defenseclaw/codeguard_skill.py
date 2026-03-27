@@ -59,11 +59,15 @@ def install_codeguard_skill(cfg) -> str:
     if source_dir is None:
         return "skipped (skill source not found in package)"
 
-    os.makedirs(target_parent, exist_ok=True)
+    try:
+        os.makedirs(target_parent, exist_ok=True)
 
-    if os.path.isdir(target_dir):
-        shutil.rmtree(target_dir)
-    shutil.copytree(source_dir, target_dir)
+        if os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        shutil.copytree(source_dir, target_dir)
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        return f"skipped ({reason})"
 
     oc_config = _expand(cfg.claw.config_file)
     _enable_codeguard_in_openclaw(oc_config)

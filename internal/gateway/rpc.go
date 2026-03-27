@@ -212,10 +212,13 @@ func (c *Client) SessionsMessagesSubscribe(ctx context.Context, sessionID string
 
 // ResolveApproval approves or rejects an exec approval request.
 func (c *Client) ResolveApproval(ctx context.Context, id string, approved bool, reason string) error {
+	decision := "deny"
+	if approved {
+		decision = "allow-once"
+	}
 	params := ApprovalResolveParams{
 		ID:       id,
-		Approved: approved,
-		Reason:   reason,
+		Decision: decision,
 	}
 	_, err := c.Request(ctx, "exec.approval.resolve", params)
 	if err != nil {

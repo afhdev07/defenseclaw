@@ -180,10 +180,37 @@ compose_file() {
   printf '%s/compose/docker-compose.%s.yml' "${ROOT_DIR}" "${PROFILE}"
 }
 
+compose_project_name() {
+  sed -n 's/^name:[[:space:]]*//p' "$(compose_file)" | head -n 1
+}
+
 run_compose() {
   (
     cd "${ROOT_DIR}"
     docker compose -f "$(compose_file)" "$@"
+  )
+}
+
+cleanup_stopped_service_containers() {
+  local project_name
+  project_name="$(compose_project_name)"
+
+  run_compose down --remove-orphans >/dev/null 2>&1 || true
+  run_compose rm -f "${SERVICE_NAME}" >/dev/null 2>&1 || true
+
+  [[ -n "${project_name}" ]] || return 0
+
+  while IFS= read -r container_id; do
+    [[ -n "${container_id}" ]] || continue
+    local container_status
+    container_status="$(docker inspect --format '{{.State.Status}}' "${container_id}" 2>/dev/null || true)"
+    if [[ "${container_status}" != "running" ]]; then
+      docker rm -f "${container_id}" >/dev/null 2>&1 || true
+    fi
+  done < <(
+    docker ps -aq --no-trunc \
+      --filter "label=com.docker.compose.project=${project_name}" \
+      --filter "label=com.docker.compose.service=${SERVICE_NAME}"
   )
 }
 
@@ -358,7 +385,8 @@ emit_product_telemetry() {
 cmd_up() {
   local package_path
   package_path="$(package_app)"
-  run_compose up -d
+  cleanup_stopped_service_containers
+  run_compose up -d --remove-orphans
   wait_for_hec_ready || fail "timed out waiting for HEC readiness on ${DEFENSECLAW_HEC_URL}"
   emit_product_telemetry startup
   if is_truthy "${DEFENSECLAW_INTEGRATION_ENABLED:-false}"; then

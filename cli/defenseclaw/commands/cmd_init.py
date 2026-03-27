@@ -172,11 +172,7 @@ def _seed_rego_policies(policy_dir: str) -> None:
 
 def _seed_splunk_bridge(data_dir: str) -> None:
     """Copy vendored Splunk bridge runtime into ~/.defenseclaw/splunk-bridge/."""
-    from pathlib import Path
-
-    here = Path(__file__).resolve()
-    repo_root = here.parent.parent.parent.parent
-    bundled = repo_root / "bundles" / "splunk_local_bridge"
+    bundled = _resolve_splunk_bridge_bundle()
     if not bundled.is_dir():
         return
 
@@ -190,6 +186,23 @@ def _seed_splunk_bridge(data_dir: str) -> None:
     if os.path.isfile(bridge_bin):
         os.chmod(bridge_bin, 0o755)
     click.echo(f"  Splunk bridge: seeded in {dest}")
+
+
+def _resolve_splunk_bridge_bundle():
+    """Resolve the vendored local Splunk runtime from package data or source tree."""
+    from pathlib import Path
+
+    pkg_dir = Path(__file__).resolve().parent.parent
+    candidates = [
+        pkg_dir / "_data" / "splunk_local_bridge",
+        pkg_dir.parent.parent / "bundles" / "splunk_local_bridge",
+    ]
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    return candidates[0]
 
 
 def _install_scanners(cfg, logger, skip: bool) -> None:

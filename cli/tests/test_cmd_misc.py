@@ -454,6 +454,7 @@ class TestSetupSplunkCommand(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--o11y", result.output)
         self.assertIn("--logs", result.output)
+        self.assertIn("--accept-splunk-license", result.output)
 
     def test_setup_splunk_o11y_non_interactive(self):
         from defenseclaw.commands.cmd_setup import setup
@@ -506,6 +507,96 @@ class TestSetupSplunkCommand(unittest.TestCase):
             obj=self.app,
         )
         self.assertNotEqual(result.exit_code, 0)
+
+    def test_setup_splunk_logs_non_interactive_requires_license_flag(self):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive"],
+            obj=self.app,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--accept-splunk-license", result.output)
+
+    @patch("defenseclaw.commands.cmd_setup._apply_logs_config")
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    def test_setup_splunk_logs_non_interactive_with_license_flag(
+        self, _mock_preflight, mock_apply_logs_config,
+    ):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive", "--accept-splunk-license"],
+            obj=self.app,
+            catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Local Splunk Enterprise configured", result.output)
+        mock_apply_logs_config.assert_called_once()
+
+    @patch("defenseclaw.commands.cmd_setup._bootstrap_bridge", return_value=None)
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker", return_value=True)
+    def test_setup_splunk_logs_non_interactive_fails_when_bridge_bootstrap_fails(
+        self, _mock_preflight, _mock_bootstrap_bridge,
+    ):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--logs", "--non-interactive", "--accept-splunk-license"],
+            obj=self.app,
+        )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertFalse(self.app.cfg.splunk.enabled)
+        self.assertNotIn("Local Splunk Enterprise configured", result.output)
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker")
+    def test_setup_splunk_logs_interactive_decline_license(self, mock_preflight):
+        from defenseclaw.commands.cmd_setup import setup
+
+        user_input = "\n".join([
+            "n",           # Enable O11y?
+            "y",           # Enable local logs?
+            "n",           # Accept Splunk license?
+        ]) + "\n"
+
+        result = self.runner.invoke(
+            setup, ["splunk"], obj=self.app,
+            input=user_input, catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Local Splunk enablement cancelled.", result.output)
+        self.assertFalse(self.app.cfg.splunk.enabled)
+        mock_preflight.assert_not_called()
+
+    @patch("defenseclaw.commands.cmd_setup._preflight_docker")
+    def test_setup_splunk_o11y_and_logs_interactive_decline_logs_preserves_o11y(
+        self, mock_preflight,
+    ):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["splunk", "--o11y", "--logs", "--access-token", "test-tok", "--realm", "us1"],
+            obj=self.app,
+            input="n\n",
+            catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Splunk O11y configured", result.output)
+        self.assertIn("Local Splunk enablement cancelled.", result.output)
+        self.assertIn("Config saved to ~/.defenseclaw/config.yaml", result.output)
+        self.assertTrue(self.app.cfg.otel.enabled)
+        self.assertFalse(self.app.cfg.splunk.enabled)
+        mock_preflight.assert_not_called()
+
+        config_path = os.path.join(self.tmp_dir, "config.yaml")
+        self.assertTrue(os.path.exists(config_path))
+        with open(config_path) as f:
+            content = f.read()
+        self.assertIn("otel:", content)
 
     def test_setup_splunk_disable_o11y(self):
         from defenseclaw.commands.cmd_setup import setup

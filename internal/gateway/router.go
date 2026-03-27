@@ -101,7 +101,7 @@ func (r *EventRouter) Route(evt EventFrame) {
 // OpenClaw sends tool execution data as session.tool rather than separate
 // tool_call/tool_result events.
 type SessionToolPayload struct {
-	Type     string          `json:"type"`     // "call" or "result"
+	Type     string          `json:"type"` // "call" or "result"
 	Tool     string          `json:"tool"`
 	Name     string          `json:"name"`
 	Args     json.RawMessage `json:"args,omitempty"`
@@ -117,8 +117,8 @@ type SessionToolPayload struct {
 }
 
 type sessionToolData struct {
-	Phase      string          `json:"phase"`      // "start", "update", "result"
-	Name       string          `json:"name"`       // tool name
+	Phase      string          `json:"phase"` // "start", "update", "result"
+	Name       string          `json:"name"`  // tool name
 	ToolCallID string          `json:"toolCallId"`
 	Args       json.RawMessage `json:"args,omitempty"`
 	Meta       string          `json:"meta,omitempty"`
@@ -231,10 +231,10 @@ func mustMarshal(v interface{}) json.RawMessage {
 // agentEventPayload is the structure of an agent streaming event.
 // Tool calls appear as type=tool_call or contain toolCall/toolResult fields.
 type agentEventPayload struct {
-	Type       string          `json:"type"`
-	ToolCall   *agentToolCall  `json:"toolCall,omitempty"`
+	Type       string           `json:"type"`
+	ToolCall   *agentToolCall   `json:"toolCall,omitempty"`
 	ToolResult *agentToolResult `json:"toolResult,omitempty"`
-	Content    json.RawMessage `json:"content,omitempty"`
+	Content    json.RawMessage  `json:"content,omitempty"`
 }
 
 type agentToolCall struct {
@@ -387,13 +387,9 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 		return
 	}
 
-	rawCmd := ""
-	var argv []string
-	cwd := ""
-	if payload.SystemRunPlan != nil {
-		rawCmd = payload.SystemRunPlan.RawCommand
-		argv = payload.SystemRunPlan.Argv
-		cwd = payload.SystemRunPlan.Cwd
+	rawCmd, argv, cwd := payload.CommandContext()
+	if rawCmd == "" && len(argv) > 0 {
+		rawCmd = strings.Join(argv, " ")
 	}
 
 	cmdName := baseCommand(rawCmd)
@@ -441,12 +437,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 			)
 		}
 
-		ctx, cancel := r.approvalCtx()
-		defer cancel()
-		if err := r.client.ResolveApproval(ctx, payload.ID, false,
-			"defenseclaw: command matched dangerous pattern"); err != nil {
-			fmt.Fprintf(os.Stderr, "[sidecar] resolve approval error: %v\n", err)
-		}
+		r.resolveApprovalAsync(payload.ID, false, "defenseclaw: command matched dangerous pattern")
 		return
 	}
 
@@ -459,12 +450,7 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 			r.otel.EndApprovalSpan(approvalSpan, "approved", "auto-approved safe command", true, false)
 		}
 
-		ctx, cancel := r.approvalCtx()
-		defer cancel()
-		if err := r.client.ResolveApproval(ctx, payload.ID, true,
-			"defenseclaw: auto-approved safe command"); err != nil {
-			fmt.Fprintf(os.Stderr, "[sidecar] resolve approval error: %v\n", err)
-		}
+		r.resolveApprovalAsync(payload.ID, true, "defenseclaw: auto-approved safe command")
 		return
 	}
 
@@ -481,6 +467,16 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 // The caller is responsible for calling the returned cancel function.
 func (r *EventRouter) approvalCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+func (r *EventRouter) resolveApprovalAsync(id string, approved bool, reason string) {
+	go func() {
+		ctx, cancel := r.approvalCtx()
+		defer cancel()
+		if err := r.client.ResolveApproval(ctx, id, approved, reason); err != nil {
+			fmt.Fprintf(os.Stderr, "[sidecar] resolve approval error: %v\n", err)
+		}
+	}()
 }
 
 func truncate(s string, max int) string {
@@ -529,7 +525,6 @@ var dangerousPatterns = []string{
 	"shadow",
 	"sudoers",
 }
-
 
 func (r *EventRouter) isCommandDangerous(rawCmd string) bool {
 	lower := strings.ToLower(rawCmd)
