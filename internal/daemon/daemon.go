@@ -159,8 +159,9 @@ func (d *Daemon) Start(args []string) (int, error) {
 		return 0, fmt.Errorf("daemon: open /dev/null: %w", err)
 	}
 
+	env := append(os.Environ(), EnvDaemon+"=1")
 	cmd := exec.Command(executable, args...)
-	cmd.Env = append(os.Environ(), EnvDaemon+"=1")
+	cmd.Env = env
 	cmd.Stdin = devNull
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
