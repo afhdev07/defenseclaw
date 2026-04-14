@@ -39,6 +39,7 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/configs"
 	"github.com/defenseclaw/defenseclaw/internal/telemetry"
+	"github.com/google/uuid"
 )
 
 // guardrailListenAddr returns the TCP listen address for the guardrail HTTP server.
@@ -81,6 +82,7 @@ type GuardrailProxy struct {
 	masterKey        string
 	gatewayToken     string // OPENCLAW_GATEWAY_TOKEN, accepted in X-DC-Auth
 	notify           *NotificationQueue
+	webhooks         *WebhookDispatcher
 
 	// resolveProviderFn selects the upstream LLMProvider for a request.
 	// Defaults to resolveProviderFromHeaders (uses X-DC-Target-URL).
@@ -145,6 +147,11 @@ func NewGuardrailProxy(
 	}
 	p.resolveProviderFn = p.resolveProviderFromHeaders
 	return p, nil
+}
+
+// SetWebhookDispatcher attaches a webhook dispatcher for guardrail block notifications.
+func (p *GuardrailProxy) SetWebhookDispatcher(d *WebhookDispatcher) {
+	p.webhooks = d
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
@@ -2106,6 +2113,19 @@ func (p *GuardrailProxy) recordTelemetry(direction, model string, verdict *ScanV
 		if tokIn != nil || tokOut != nil {
 			p.otel.RecordLLMTokens(ctx, "apply_guardrail", "defenseclaw", model, "openclaw", ptrOr(tokIn, 0), ptrOr(tokOut, 0))
 		}
+	}
+
+	if p.webhooks != nil && verdict.Action == "block" {
+		event := audit.Event{
+			ID:        uuid.New().String(),
+			Timestamp: time.Now().UTC(),
+			Action:    "guardrail-block",
+			Target:    model,
+			Actor:     "defenseclaw-guardrail",
+			Details:   details,
+			Severity:  verdict.Severity,
+		}
+		p.webhooks.Dispatch(event)
 	}
 }
 
