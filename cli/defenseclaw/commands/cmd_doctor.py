@@ -235,13 +235,40 @@ def _check_llm_api_key(cfg, r: _DoctorResult) -> None:
         return
 
     model = gc.model or ""
-    if "anthropic" in model or env_name.startswith("ANTHROPIC"):
+    api_base = getattr(gc, "api_base", "") or ""
+    if api_base:
+        _verify_custom_base(api_base, api_key, r)
+    elif "anthropic" in model or env_name.startswith("ANTHROPIC"):
         _verify_anthropic(api_key, r)
     elif "openai" in model or env_name.startswith("OPENAI"):
         _verify_openai(api_key, r)
     else:
         _emit("pass", "LLM API key", f"{env_name} is set (cannot verify provider '{model}')")
         r.record("pass")
+
+
+def _verify_custom_base(api_base: str, api_key: str, r: _DoctorResult) -> None:
+    base = api_base.rstrip("/")
+    url = base + "/models" if base.endswith("/v1") else base + "/v1/models"
+    code, body = _http_probe(
+        url,
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10.0,
+    )
+    label = f"LLM API key ({api_base})"
+    if 200 <= code < 300:
+        _emit("pass", label, "endpoint reachable, key accepted")
+        r.record("pass")
+    elif code == 401:
+        _emit("fail", label, "key rejected (401)")
+        r.record("fail")
+    elif code == 0:
+        _emit("warn", label, f"could not reach endpoint: {body}")
+        r.record("warn")
+    else:
+        _emit("warn", label, f"HTTP {code} from endpoint")
+        r.record("warn")
 
 
 def _verify_anthropic(api_key: str, r: _DoctorResult) -> None:
