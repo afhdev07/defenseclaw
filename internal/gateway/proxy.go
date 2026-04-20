@@ -869,6 +869,11 @@ func (p *GuardrailProxy) resolveConfiguredProvider(req *ChatRequest) LLMProvider
 
 	fmt.Fprintf(os.Stderr, "[guardrail] direct-provider mode: using configured model %q\n", cfgModel)
 
+	if p.cfg.APIBase != "" {
+		fmt.Fprintf(os.Stderr, "[guardrail] using configured api_base %q\n", p.cfg.APIBase)
+		return NewProviderWithBase(cfgModel, apiKey, p.cfg.APIBase)
+	}
+
 	provider, err := NewProvider(cfgModel, apiKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] failed to create provider for %q: %v\n", cfgModel, err)
