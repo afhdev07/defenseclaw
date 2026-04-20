@@ -62,6 +62,19 @@ type anthropicUsage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
+// setAuthHeaders wires either a regular API key (x-api-key) or an OAuth
+// setup-token (Authorization: Bearer + anthropic-beta) depending on token
+// shape. `sk-ant-oat*` prefix signals an OAuth/setup-token.
+func (p *anthropicProvider) setAuthHeaders(h http.Header) {
+	if strings.HasPrefix(p.apiKey, "sk-ant-oat") {
+		h.Set("Authorization", "Bearer "+p.apiKey)
+		h.Set("anthropic-beta", "oauth-2025-04-20")
+	} else {
+		h.Set("x-api-key", p.apiKey)
+	}
+	h.Set("anthropic-version", "2023-06-01")
+}
+
 func (p *anthropicProvider) ChatCompletion(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	aReq := p.translateRequest(req)
 	aReq.Stream = false
@@ -77,8 +90,7 @@ func (p *anthropicProvider) ChatCompletion(ctx context.Context, req *ChatRequest
 		return nil, fmt.Errorf("provider: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	p.setAuthHeaders(httpReq.Header)
 
 	resp, err := providerHTTPClient.Do(httpReq)
 	if err != nil {
@@ -114,8 +126,7 @@ func (p *anthropicProvider) ChatCompletionStream(ctx context.Context, req *ChatR
 		return nil, fmt.Errorf("provider: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	p.setAuthHeaders(httpReq.Header)
 
 	resp, err := providerHTTPClient.Do(httpReq)
 	if err != nil {
